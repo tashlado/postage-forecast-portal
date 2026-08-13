@@ -1,0 +1,9 @@
+﻿# clasp credentials - never commit
+.clasprc.json
+
+# node
+node_modules/
+
+# local scratch
+*.local
+.DS_Store

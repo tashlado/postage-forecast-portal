@@ -1,0 +1,2314 @@
+<!DOCTYPE html>
+<html>
+<head>
+<base target="_top">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root{
+  --brand:#0000FF; --brand-lo:#0000C2; --brand-tint:#F0F0FF;
+  --ink:#0B0B0F; --ink-2:#3F4451; --ink-3:#6B7280;
+  --line:#E4E6EC; --line-2:#C8CBD4;
+  --bg:#F7F8FA; --surface:#FFFFFF;
+  --ok:#0F8A5F; --warn:#B8730A; --err:#C6273E;
+  --radius:8px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  background:var(--bg); color:var(--ink); font-size:14px; line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+}
+.num{font-variant-numeric:tabular-nums}
+button{font:inherit;cursor:pointer;border:none;background:none;color:inherit}
+input,select{font:inherit;color:inherit}
+a{color:var(--brand)}
+
+/* ---- header ---- */
+header{background:var(--surface);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:20}
+.hrow{display:flex;align-items:center;gap:20px;padding:10px 20px;max-width:1400px;margin:0 auto}
+.logo{height:22px;width:auto;display:block}
+nav{display:flex;gap:2px;flex:1;overflow-x:auto}
+nav button{padding:7px 11px;font-size:13px;color:var(--ink-3);border-radius:6px 6px 0 0;white-space:nowrap}
+nav button:hover{color:var(--ink);background:var(--bg)}
+nav button.on{color:var(--ink);font-weight:500;box-shadow:inset 0 -2px 0 var(--brand)}
+.hright{display:flex;align-items:center;gap:14px;font-size:12px;color:var(--ink-3);white-space:nowrap}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block;vertical-align:middle;margin-right:6px}
+.dot.ok{background:var(--ok)} .dot.busy{background:var(--warn);animation:pulse 1s infinite}
+.dot.err{background:var(--err)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.badge{background:var(--brand-tint);color:var(--brand-lo);border-radius:10px;padding:1px 8px;font-size:11px}
+.badge.amber{background:#FFF4E0;color:var(--warn)}
+
+/* ---- layout ---- */
+main{max-width:1400px;margin:0 auto;padding:18px 20px 60px}
+.screen{display:none} .screen.on{display:block}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:12px;margin-bottom:16px}
+.card>h2{font-size:14px;font-weight:500;margin:0;padding:13px 16px;border-bottom:1px solid var(--line)}
+.card>.body{padding:16px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:900px){.grid2{grid-template-columns:1fr}}
+.muted{color:var(--ink-3)} .small{font-size:12px}
+.right{text-align:right} .mono{font-variant-numeric:tabular-nums}
+
+/* ---- tables ---- */
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;font-weight:400;font-size:11px;letter-spacing:.06em;color:var(--ink-3);
+   padding:6px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:7px 8px;border-bottom:1px solid var(--line)}
+tbody tr:last-child td{border-bottom:none}
+tbody tr.sel{background:var(--brand-tint)}
+tbody tr.click{cursor:pointer}
+tbody tr.click:hover{background:var(--bg)}
+
+/* ---- controls ---- */
+.btn{padding:7px 13px;border-radius:var(--radius);border:1px solid var(--line-2);
+     background:var(--surface);font-size:13px;color:var(--ink-2)}
+.btn:hover{background:var(--bg)}
+.btn.primary{background:var(--brand);border-color:var(--brand);color:#fff}
+.btn.primary:hover{background:var(--brand-lo)}
+.btn.danger{color:var(--err);border-color:#F0C9CF}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn.sm{padding:4px 9px;font-size:12px}
+.field{display:flex;flex-direction:column;gap:4px}
+.field label{font-size:11px;color:var(--ink-3);letter-spacing:.04em}
+input[type=text],input[type=date],input[type=number],select{
+  padding:6px 9px;border:1px solid var(--line-2);border-radius:6px;background:var(--surface);width:100%}
+input:focus,select:focus{outline:2px solid var(--brand);outline-offset:-1px;border-color:var(--brand)}
+input.bad{border-color:var(--err);background:#FFF6F7}
+.row{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:14px}
+.pill{display:inline-block;background:var(--brand-tint);color:var(--brand-lo);
+      border-radius:4px;padding:1px 7px;font-size:11px}
+.sev{border-radius:4px;padding:1px 7px;font-size:11px;font-weight:500}
+.sev.ERROR{background:#FDEBED;color:var(--err)}
+.sev.WARN{background:#FFF4E0;color:var(--warn)}
+.sev.INFO{background:#EEF1F5;color:var(--ink-3)}
+.total{display:flex;align-items:center;gap:10px;padding:10px 8px;border-top:2px solid var(--line);
+       font-size:13px;font-weight:500}
+.total.bad{color:var(--err)} .total.good{color:var(--ok)}
+.empty{padding:32px;text-align:center;color:var(--ink-3);font-size:13px}
+.err-box{background:#FDEBED;border:1px solid #F0C9CF;color:var(--err);
+         padding:10px 12px;border-radius:var(--radius);font-size:13px;margin-bottom:14px}
+.ok-box{background:#EAF7F1;border:1px solid #BFE5D5;color:var(--ok);
+        padding:10px 12px;border-radius:var(--radius);font-size:13px;margin-bottom:14px}
+.spinner{display:inline-block;width:13px;height:13px;border:2px solid var(--line-2);
+         border-top-color:var(--brand);border-radius:50%;animation:spin .7s linear infinite;
+         vertical-align:-2px;margin-right:6px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.load{padding:60px;text-align:center;color:var(--ink-3)}
+.up{color:var(--err)} .down{color:var(--ok)}
+
+/* ---- modal form ---- */
+.back{position:absolute;inset:0;background:rgba(11,11,15,.42);display:flex;
+      align-items:flex-start;justify-content:center;padding:60px 20px 40px;z-index:100}
+.modal{background:var(--surface);border-radius:14px;width:100%;max-width:480px;
+       box-shadow:0 18px 48px rgba(11,11,15,.22);overflow:hidden}
+.modal h3{margin:0;padding:16px 20px 14px;font-size:16px;font-weight:500;
+          border-bottom:1px solid var(--line)}
+.modal .intro{margin:0;padding:12px 20px 0;font-size:13px;color:var(--ink-3)}
+.modal .fields{padding:16px 20px 4px;display:flex;flex-direction:column;gap:14px}
+.modal .fields .field label{font-size:12px;color:var(--ink-2)}
+.modal .hint{font-size:11px;color:var(--ink-3);margin-top:2px}
+.modal .acts{display:flex;justify-content:flex-end;gap:8px;padding:16px 20px;
+             border-top:1px solid var(--line);background:var(--bg)}
+.modal .merr{margin:0 20px;padding:9px 11px;background:#FDEBED;border:1px solid #F0C9CF;
+             color:var(--err);border-radius:8px;font-size:13px}
+.inline{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink-2)}
+.inline input[type=checkbox]{width:auto}
+.suffixed{display:flex;align-items:center;gap:6px}
+.suffixed span{font-size:12px;color:var(--ink-3);white-space:nowrap}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="hrow">
+    <img class="logo" alt="HeliosX" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAG4AAAAoCAYAAAAfWs+KAAAEMUlEQVR42u1bQWvUQBT+IvsrCoI9SA9LCWivFby5Qjz06EEoePEgDcVDf0ARD4s0CHqwUOjBY6AWusfSeg8GUfBkQfBP7EI8bLKdHd7MvOzMZhOYBwOdTiYzmW/el/e+zAbw1lIrekLlndR45den9cAVQ6AYS6Xv16fdoPUJ0CK/Pq0FbVZyCbQzgka9dYAiBVC9dYUiX3tvWwntWVFk7j2tPSG+ytteq6NID1yTtMfwlDlvk0EbUqD1AGRC/QbAjmFGCYBtob4LIHf4xCGAE6H+DcAeo61FgAUTAK+A4qXwfwB4eFsPJvP9gslt1DizXwAOVMCPpWKyVLp+4PjJQ+n+qaYta3k4z/CemWdGdSjyjqc011Z5UjAh2GtvCkYwmafQoidt0JLZgp+CB0Omyi5ZDuCjUP/TXvCKHhCcA8UFgKdC4xegkCiz8sQ5OzC9G7tElV1VQBSUqaTIyBRFLpsqB+XCZ8I7KbUEOylLCiA2bIBEGLsaPynbOBYT/U3jUpS5T1Nm0QNwKLVdlJ5KUmQTHpcS9+Z4Up3gJNWAOzaUxLDhTP2zml6XEwm1lay1DOBSxoOrHt4WuIQ5tg68scX8OTJW34WsNSaA0JXMAFxMLG4oLHxqWDwb4Kh0YSB5kmn+iWb+A8V6ccEbCimBtfI/tizyxDPGjsw0Xm4DnLwpQsYz172HvDHjepTpRtZyHZyEADaF+qniulPineLCxI+M5xpF51zRh7I1qX4E4BmArbJc1gtUij6A99IF+7qcjTLXedxjqf4IwDpx3V2pvgFg5GDTcO0vsXGq8a8lML+WQF+XIOWWc31LyFqf6t6EAm7L0OdE8iquB+hs3cGmWXO0+Y4AvJCeMSK8+TMfwMqTikhKxgHg+XTjFrtA8IbrdT2FOqGzmxrAddUelO+6SLMhoxLAHWZgopO1zqaAFlfcHG7ZkldFMSa7dDDWP8dz3ynpdw3AE0y/iGwSACYwfqEglf9K1hK98BAoRvNe2kweN6gfcTnN47hSWcKMPlVqCnPNtMp/pEgLhpzo0nVUOSKCE87CuYoqfwh/39Ncty31yaVUJdOAfySNw6FIhawFADim5bBKqG5OOTG1h4YxbTwuZigjpjwss5w/lXQbZK3iTH3GRA2ea+BChS6ZKKSw2LHklRHqSUIIzqrnjWvOP2HKXISsNSsLyV/L0Co5Iq1q4W2BCxUAUSVcUCDXKEPcA61zVLqQmrKsrwOmBYyZwUmywNcBk9icMgISk1idGCiSCYQJaJougwZyoiqk3hBC/xzN2UAY+3eZNuQL9q/uMdKDhg0A3wlZ6wMd5s8S9J40VjkeTwbztrDZBBv+zOSqQbNQ/udo059cbga0egdavXWeIr2tGrSFTmt5Wz1F+h8hdhC4xn+E6HeDFWiz3Os+gAuh8Vg4zexzsHa/45rNy/4DausdKQEq7hMAAAAASUVORK5CYII=">
+    <nav id="nav"></nav>
+    <div class="hright">
+      <span id="saveState"><span class="dot ok"></span>Saved</span>
+      <span id="pending"></span>
+      <span id="who"></span>
+    </div>
+  </div>
+</header>
+
+<main>
+  <div id="boot" class="load"><span class="spinner"></span>Loading…</div>
+  <div id="app" style="display:none">
+    <div id="screens"></div>
+  </div>
+</main>
+
+<script>
+/* ===================================================================
+   State
+   =================================================================== */
+var S = {
+  user:null, ref:{}, carriers:[], methods:[], surchargeTypes:[],
+  calendar:[], hlIds:[], mdIds:[], scenarios:[], config:{}, status:{},
+  rateBase:[], rateSurcharge:[], mixMethod:[], mixLP:[], mixCC:[],
+  output:[], validation:[], recentAudit:[], actuals:[], snapshots:[],
+  screen:'dashboard', loaded:false,
+  sel:{ hlId:null, modellingId:null, regime:'CC', lp:'PARCEL', asAt:null,
+        dashYear:null, mixSection:'method', adminSection:'carriers',
+        histSection:'snapshots',
+        chartHl:null,
+        chartSeries:{f1:true,f2:true,f3:true,f4:true,a1:true,a2:true,a3:true,a4:true} }
+};
+var TABS = [
+  ['dashboard','Dashboard',null],
+  ['rates','Rates','editRates'],
+  ['mixes','Mixes','editMixes'],
+  ['output','Output',null],
+  ['actuals','Actuals',null],
+  ['admin','Admin','editStructure'],
+  ['validation','Checks',null],
+  ['history','History','viewAudit']
+];
+
+/* ===================================================================
+   Server calls, with the save indicator wired in automatically
+   =================================================================== */
+var inflight = 0;
+function setSave(state, msg){
+  var el = document.getElementById('saveState');
+  if(state==='busy') el.innerHTML = '<span class="dot busy"></span>Saving…';
+  else if(state==='err') el.innerHTML = '<span class="dot err"></span>'+(msg||'Not saved');
+  else el.innerHTML = '<span class="dot ok"></span>Saved';
+}
+function call(fn, args, onOk, onErr, quiet){
+  if(!quiet){ inflight++; setSave('busy'); }
+  google.script.run
+    .withSuccessHandler(function(r){
+      if(!quiet){ inflight--; if(inflight<=0){ inflight=0; setSave('ok'); } }
+      if(onOk) onOk(r);
+    })
+    .withFailureHandler(function(e){
+      if(!quiet){ inflight--; if(inflight<=0){ inflight=0; setSave('err'); } }
+      var m = (e && e.message) ? e.message : String(e);
+      if(onErr) onErr(m); else showError(m);
+    })
+    [fn].apply(null, args||[]);
+}
+window.addEventListener('beforeunload', function(e){
+  if(inflight>0){ e.preventDefault(); e.returnValue=''; }
+});
+
+/* ===================================================================
+   Helpers
+   =================================================================== */
+function esc(s){ return String(s==null?'':s)
+  .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+  .replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+function money(n,dp){ return (Number(n)||0).toFixed(dp===undefined?4:dp); }
+function pct(n,dp){ return ((Number(n)||0)*100).toFixed(dp===undefined?2:dp)+'%'; }
+function hlName(id){
+  var h=S.hlIds.filter(function(x){return x.id===id;})[0];
+  return h ? (h.brand+' '+h.geo+' '+h.treatmentType+(h.wlSplit&&h.wlSplit!=='*'?' '+h.wlSplit:'')) : ('High Level ID '+id);
+}
+function mdName(id){
+  var m=S.mdIds.filter(function(x){return x.id===id;})[0];
+  return m ? (m.carrier+' / '+m.method+' / '+m.letterParcel) : ('Modelling ID '+id);
+}
+function can(cap){ return S.user && (S.user.allAccess || S.user.capabilities[cap]); }
+function showError(msg){
+  var b=document.createElement('div'); b.className='err-box'; b.textContent=msg;
+  var host=document.querySelector('.screen.on'); if(!host) return alert(msg);
+  host.insertBefore(b, host.firstChild);
+  setTimeout(function(){ if(b.parentNode) b.parentNode.removeChild(b); }, 8000);
+}
+function showOk(msg){
+  var b=document.createElement('div'); b.className='ok-box'; b.textContent=msg;
+  var host=document.querySelector('.screen.on'); if(!host) return;
+  host.insertBefore(b, host.firstChild);
+  setTimeout(function(){ if(b.parentNode) b.parentNode.removeChild(b); }, 5000);
+}
+
+/* ===================================================================
+   Modal form
+   -------------------------------------------------------------------
+   Replaces window.prompt. A browser prompt cannot label its fields, so
+   everything had to be crammed into one comma-separated string — which meant
+   users had to remember the field order, and a raw date serial leaking into the
+   prefill was invisible until someone looked closely at it.
+   =================================================================== */
+var openModal=null;
+
+function closeForm(){
+  if(openModal && openModal.parentNode) openModal.parentNode.removeChild(openModal);
+  openModal=null;
+  document.onkeydown=null;
+}
+
+/**
+ * cfg = { title, intro, saveLabel, fields:[...], onSave(values, done, fail) }
+ * field = { key, label, type, value, options, hint, required, min, max, step,
+ *           suffix, placeholder, openEnded }
+ *   type: text | number | date | select | month
+ */
+function openForm(cfg){
+  closeForm();
+  var back=document.createElement('div');
+  back.className='back';
+
+  var h='<div class="modal" role="dialog" aria-modal="true">';
+  h+='<h3>'+esc(cfg.title)+'</h3>';
+  if(cfg.intro) h+='<p class="intro">'+cfg.intro+'</p>';
+  h+='<div class="merr" id="mErr" style="display:none"></div>';
+  h+='<div class="fields">';
+
+  cfg.fields.forEach(function(f){
+    h+='<div class="field"><label for="mf_'+f.key+'">'+esc(f.label)+
+       (f.required?' <span style="color:var(--err)">*</span>':'')+'</label>';
+    if(f.type==='select'){
+      h+='<select id="mf_'+f.key+'">';
+      if(!f.required) h+='<option value=""></option>';
+      (f.options||[]).forEach(function(o){
+        var v=(o.value!==undefined?o.value:o), l=(o.label!==undefined?o.label:o);
+        h+='<option value="'+esc(v)+'"'+(String(v)===String(f.value)?' selected':'')+'>'+
+           esc(l)+'</option>';
+      });
+      h+='</select>';
+    } else if(f.suffix){
+      h+='<div class="suffixed"><input id="mf_'+f.key+'" type="'+(f.type||'text')+'"'+
+         (f.step?' step="'+f.step+'"':'')+(f.min!==undefined?' min="'+f.min+'"':'')+
+         (f.max!==undefined?' max="'+f.max+'"':'')+
+         ' value="'+esc(f.value===null||f.value===undefined?'':f.value)+'"'+
+         (f.placeholder?' placeholder="'+esc(f.placeholder)+'"':'')+'>'+
+         '<span>'+esc(f.suffix)+'</span></div>';
+    } else {
+      h+='<input id="mf_'+f.key+'" type="'+(f.type==='month'?'date':(f.type||'text'))+'"'+
+         (f.step?' step="'+f.step+'"':'')+(f.min!==undefined?' min="'+f.min+'"':'')+
+         (f.max!==undefined?' max="'+f.max+'"':'')+
+         (f.readonly?' readonly style="background:var(--bg);color:var(--ink-3)"':'')+
+         ' value="'+esc(f.value===null||f.value===undefined?'':f.value)+'"'+
+         (f.placeholder?' placeholder="'+esc(f.placeholder)+'"':'')+'>';
+    }
+    if(f.openEnded){
+      h+='<label class="inline" style="margin-top:6px"><input type="checkbox" id="mo_'+f.key+'"'+
+         (String(f.value).indexOf('9999')===0?' checked':'')+'> No end date</label>';
+    }
+    if(f.hint) h+='<div class="hint">'+f.hint+'</div>';
+    h+='</div>';
+  });
+
+  h+='</div><div class="acts">'+
+     '<button class="btn" id="mCancel">Cancel</button>'+
+     '<button class="btn primary" id="mSaveBtn">'+esc(cfg.saveLabel||'Save')+'</button>'+
+     '</div></div>';
+  back.innerHTML=h;
+  document.body.appendChild(back);
+  openModal=back;
+
+  function fail(msg){
+    var e=back.querySelector('#mErr');
+    e.style.display='block'; e.textContent=msg;
+    var b=back.querySelector('#mSaveBtn'); b.disabled=false; b.textContent=cfg.saveLabel||'Save';
+  }
+
+  cfg.fields.forEach(function(f){
+    if(!f.openEnded) return;
+    var cb=back.querySelector('#mo_'+f.key), inp=back.querySelector('#mf_'+f.key);
+    if(!cb || !inp) return;      // one missing element should not kill the form
+    function sync(){
+      if(cb.checked){ inp.value='9999-12-31'; inp.disabled=true; }
+      else { if(inp.value==='9999-12-31') inp.value=''; inp.disabled=false; }
+    }
+    cb.onchange=sync; sync();
+  });
+
+  back.querySelector('#mCancel').onclick=closeForm;
+  back.onclick=function(e){ if(e.target===back) closeForm(); };
+  document.onkeydown=function(e){ if(e.key==='Escape') closeForm(); };
+
+  back.querySelector('#mSaveBtn').onclick=function(){
+    var vals={}, missing=[];
+    cfg.fields.forEach(function(f){
+      var el=back.querySelector('#mf_'+f.key);
+      var v=el?el.value:(f.value===undefined?'':f.value);
+      if(f.required && String(v).trim()==='') missing.push(f.label);
+      vals[f.key]=v;
+    });
+    if(missing.length) return fail('Please fill in: '+missing.join(', '));
+    var b=back.querySelector('#mSaveBtn');
+    b.disabled=true; b.textContent='Saving…';
+    cfg.onSave(vals, closeForm, fail);
+  };
+
+  var first=back.querySelector('.fields input:not([disabled]), .fields select');
+  if(first) first.focus();
+}
+
+/** Options helpers for the selects. */
+function optsRef(list){
+  return (S.ref[list]||[]).map(function(v){
+    return { value:v.code, label:v.label+' ('+v.code+')' }; });
+}
+function optsHl(){
+  return S.hlIds.map(function(h){
+    return { value:h.id, label:h.id+' — '+hlName(h.id) }; });
+}
+function todayOrHorizon(){
+  return S.config.horizonStart || '';
+}
+
+/* ===================================================================
+   Boot
+   =================================================================== */
+function boot(){
+  call('initApp', [], function(init){
+    S.user=init.user; S.ref=init.reference; S.carriers=init.carriers;
+    S.methods=init.methods; S.surchargeTypes=init.surchargeTypes;
+    S.calendar=init.calendar; S.hlIds=init.highLevelIds; S.mdIds=init.modellingIds;
+    S.scenarios=init.scenarios; S.config=init.config; S.status=init.status;
+    S.sel.hlId = S.hlIds.length ? S.hlIds[0].id : null;
+    S.sel.asAt = S.config.horizonStart;
+
+    document.getElementById('who').textContent = S.user.name+' · '+S.user.role;
+    document.getElementById('boot').style.display='none';
+    document.getElementById('app').style.display='block';
+    renderNav(); renderStatus(); renderAll();
+
+    call('loadAllAppData', [], function(d){
+      S.rateBase=d.rateBase; S.rateSurcharge=d.rateSurcharge;
+      S.mixMethod=d.mixMethod; S.mixLP=d.mixLetterParcel; S.mixCC=d.mixColdChain;
+      S.output=d.output; S.validation=d.validation; S.recentAudit=d.recentAudit;
+      S.actuals=d.actuals||[]; S.snapshots=d.snapshots||[];
+      S.status=d.status; S.loaded=true;
+      renderStatus(); renderAll();
+    }, function(m){ showError('Could not load data: '+m); }, true);
+  }, function(m){
+    document.getElementById('boot').innerHTML =
+      '<div class="err-box" style="max-width:520px;margin:0 auto;text-align:left">'+esc(m)+'</div>';
+  }, true);
+}
+
+function renderNav(){
+  var n=document.getElementById('nav');
+  n.innerHTML = TABS.filter(function(t){ return !t[2] || can(t[2]); })
+    .map(function(t){
+      return '<button data-s="'+t[0]+'" class="'+(S.screen===t[0]?'on':'')+'">'+t[1]+'</button>';
+    }).join('');
+  Array.prototype.forEach.call(n.querySelectorAll('button'), function(b){
+    b.onclick=function(){ S.screen=b.getAttribute('data-s'); renderNav(); renderAll(); };
+  });
+}
+
+function renderStatus(){
+  var p=document.getElementById('pending');
+  var n=(S.status&&S.status.pendingChanges)||0;
+  p.innerHTML = n ? '<span class="badge amber">'+n+' change'+(n===1?'':'s')+' unpublished</span>' : '';
+}
+
+function renderAll(){
+  var host=document.getElementById('screens');
+  var fns={dashboard:viewDashboard,rates:viewRates,mixes:viewMixes,
+           validation:viewValidation,output:viewOutput,history:viewHistory,
+           admin:viewAdmin,actuals:viewActuals};
+  host.innerHTML='<div class="screen on">'+(fns[S.screen]||viewDashboard)()+'</div>';
+  var after={rates:wireRates,mixes:wireMixes,output:wireOutput,
+             dashboard:wireDashboard,validation:wireValidation,admin:wireAdmin,
+             actuals:wireActuals,history:wireHistory};
+  if(after[S.screen]) after[S.screen]();
+}
+function loading(){ return '<div class="load"><span class="spinner"></span>Loading…</div>'; }
+
+/* ===================================================================
+   Dashboard
+   =================================================================== */
+function viewDashboard(){
+  var last=S.status&&S.status.lastRun;
+  var h='';
+  h+='<div class="grid2">';
+  h+='<div class="card"><h2>Forecast status</h2><div class="body">';
+  if(last){
+    h+='<div style="font-size:13px">Last published <strong>'+esc(last.ts)+'</strong> by '+esc(last.by)+'</div>';
+    h+='<div class="small muted" style="margin-top:6px">Run '+last.id+' · '+last.rows+
+       ' rows · '+last.durationMs+'ms · validation '+esc(last.validationStatus)+'</div>';
+  } else { h+='<div class="muted">Never published.</div>'; }
+  var pend=(S.status&&S.status.pendingChanges)||0;
+  h+='<div style="margin-top:12px">'+(pend
+     ? '<span class="badge amber">'+pend+' change'+(pend===1?'':'s')+' since then</span>'
+     : '<span class="badge">Up to date</span>')+'</div>';
+  h+='</div></div>';
+
+  var counts={ERROR:0,WARN:0,INFO:0};
+  S.validation.forEach(function(v){ counts[v.severity]=(counts[v.severity]||0)+1; });
+  h+='<div class="card"><h2>Validation</h2><div class="body">';
+  if(!S.loaded){ h+=loading(); }
+  else{
+    h+='<div style="display:flex;gap:16px">';
+    ['ERROR','WARN','INFO'].forEach(function(s){
+      h+='<div><div style="font-size:22px" class="num">'+counts[s]+'</div>'+
+         '<div class="sev '+s+'">'+s+'</div></div>';
+    });
+    h+='</div>';
+    h+='<div class="small muted" style="margin-top:10px">'+
+       (counts.ERROR?'Errors must be fixed before publishing.':'Nothing blocking.')+'</div>';
+  }
+  h+='</div></div></div>';
+
+  if(S.loaded) h+=viewRateChart();
+
+  h+='<div class="card"><h2>Forecast rate per order</h2>';
+  if(!S.loaded) h+='<div class="body">'+loading()+'</div>'; else h+=outputSummary();
+  h+='</div>';
+  return h;
+}
+function wireDashboard(){
+  wireRateChart();
+  var y=document.getElementById('dYear');
+  if(y) y.onchange=function(){ S.sel.dashYear=Number(y.value); renderAll(); };
+  Array.prototype.forEach.call(document.querySelectorAll('[data-hl]'),function(tr){
+    tr.onclick=function(){
+      S.sel.hlId=Number(tr.getAttribute('data-hl'));
+      S.sel.modellingId=null; S.screen='rates';
+      renderNav(); renderAll();
+    };
+  });
+}
+
+/* ===================================================================
+   Rates  — the main screen
+   =================================================================== */
+function viewRates(){
+  if(!S.loaded) return '<div class="card"><div class="body">'+loading()+'</div></div>';
+  var h='';
+  h+='<div class="card"><div class="body"><div class="row">';
+  h+='<div class="field" style="min-width:280px"><label>High Level ID</label>'+
+     '<select id="rHl">'+S.hlIds.map(function(x){
+        return '<option value="'+x.id+'"'+(x.id===S.sel.hlId?' selected':'')+'>'+
+               x.id+' — '+esc(hlName(x.id))+'</option>';}).join('')+'</select></div>';
+  var routes=S.mdIds.filter(function(m){return m.hlId===S.sel.hlId;});
+  if(!S.sel.modellingId && routes.length) S.sel.modellingId=routes[0].id;
+  h+='<div class="field" style="min-width:320px"><label>Modelling ID</label>'+
+     '<select id="rMd">'+routes.map(function(m){
+        return '<option value="'+m.id+'"'+(m.id===S.sel.modellingId?' selected':'')+'>'+
+               m.id+' — '+esc(m.carrier+' / '+m.method+' / '+m.letterParcel)+'</option>';}).join('')+
+     '</select></div>';
+  h+='</div></div></div>';
+
+  if(!S.sel.modellingId) return h+'<div class="card"><div class="empty">This High Level ID has no routes.</div></div>';
+  var mid=S.sel.modellingId;
+  var canEdit = can('editRates') &&
+    (S.mdIds.filter(function(m){return m.id===mid;})[0]||{}).canEdit !== false;
+
+  /* base rates */
+  var base=S.rateBase.filter(function(r){return r.modellingId===mid;})
+           .sort(function(a,b){return a.validFrom<b.validFrom?-1:1;});
+  h+='<div class="card"><h2>Base rate'+
+     (canEdit?'<button class="btn sm primary" id="addBase" style="float:right;margin-top:-3px">Add rate change</button>':'')+
+     '</h2><div class="body" style="padding:0">';
+  h+='<table><thead><tr><th>From</th><th>To</th><th class="right">Rate</th><th>Source</th><th></th></tr></thead><tbody>';
+  if(!base.length) h+='<tr><td colspan="5" class="empty">No base rate. This route prices at zero.</td></tr>';
+  base.forEach(function(r){
+    h+='<tr><td class="num">'+esc(r.validFrom)+'</td><td class="num">'+
+       (r.validTo>='9999-01-01'?'<span class="pill">open-ended</span>':esc(r.validTo))+'</td>'+
+       '<td class="right num">'+money(r.value)+'</td><td class="muted small">'+esc(r.sourceRef)+'</td>'+
+       '<td class="right">'+(canEdit?'<button class="btn sm" data-eb="'+r.id+'">Edit</button> '+
+       '<button class="btn sm danger" data-db="'+r.id+'">Delete</button>':'')+'</td></tr>';
+  });
+  h+='</tbody></table></div></div>';
+
+  /* surcharges */
+  var sur=S.rateSurcharge.filter(function(r){return r.modellingId===mid;})
+          .sort(function(a,b){return (a.code+a.validFrom)<(b.code+b.validFrom)?-1:1;});
+  h+='<div class="card"><h2>Surcharges'+
+     (canEdit?'<button class="btn sm primary" id="addSur" style="float:right;margin-top:-3px">Add surcharge</button>':'')+
+     '</h2><div class="body" style="padding:0">';
+  h+='<table><thead><tr><th>Type</th><th>From</th><th>To</th><th class="right">Value</th><th></th></tr></thead><tbody>';
+  if(!sur.length) h+='<tr><td colspan="5" class="empty">No surcharges on this route.</td></tr>';
+  sur.forEach(function(r){
+    var def=S.surchargeTypes.filter(function(s){return s.code===r.code;})[0]||{valueType:'AMT'};
+    h+='<tr><td>'+esc(r.code)+'</td><td class="num">'+esc(r.validFrom)+'</td><td class="num">'+
+       (r.validTo>='9999-01-01'?'<span class="pill">open-ended</span>':esc(r.validTo))+'</td>'+
+       '<td class="right num">'+(def.valueType==='PCT'?pct(r.value,4):money(r.value))+'</td>'+
+       '<td class="right">'+(canEdit?'<button class="btn sm" data-es="'+r.id+'">Edit</button> '+
+       '<button class="btn sm danger" data-ds="'+r.id+'">Delete</button>':'')+'</td></tr>';
+  });
+  h+='</tbody></table></div></div>';
+
+  h+='<div class="card"><h2>Resolved by month <span class="small muted">— what the engine uses</span></h2>'+
+     '<div class="body" style="padding:0"><div id="resolved">'+loading()+'</div></div></div>';
+  return h;
+}
+
+function wireRates(){
+  var hl=document.getElementById('rHl'), md=document.getElementById('rMd');
+  if(hl) hl.onchange=function(){ S.sel.hlId=Number(hl.value); S.sel.modellingId=null; renderAll(); };
+  if(md) md.onchange=function(){ S.sel.modellingId=Number(md.value); renderAll(); };
+  if(!S.sel.modellingId) return;
+
+  var add=document.getElementById('addBase');
+  if(add) add.onclick=function(){ editBase(null); };
+  var addS=document.getElementById('addSur');
+  if(addS) addS.onclick=function(){ editSurcharge(null); };
+  Array.prototype.forEach.call(document.querySelectorAll('[data-eb]'),function(b){
+    b.onclick=function(){ editBase(Number(b.getAttribute('data-eb'))); };});
+  Array.prototype.forEach.call(document.querySelectorAll('[data-db]'),function(b){
+    b.onclick=function(){ delBase(Number(b.getAttribute('data-db'))); };});
+  Array.prototype.forEach.call(document.querySelectorAll('[data-es]'),function(b){
+    b.onclick=function(){ editSurcharge(Number(b.getAttribute('data-es'))); };});
+  Array.prototype.forEach.call(document.querySelectorAll('[data-ds]'),function(b){
+    b.onclick=function(){ delSurcharge(Number(b.getAttribute('data-ds'))); };});
+
+  call('getResolvedByMonth',[S.sel.modellingId,1],function(rows){
+    var el=document.getElementById('resolved'); if(!el) return;
+    if(!rows.length){ el.innerHTML='<div class="empty">Nothing to show.</div>'; return; }
+    var h='<table><thead><tr><th>Month</th><th class="right">Base</th><th class="right">Surcharge %</th>'+
+          '<th class="right">Surcharge amt</th><th class="right">Rate/parcel</th>'+
+          '<th class="right">Mix</th><th class="right">Contribution</th></tr></thead><tbody>';
+    var prev=null;
+    rows.forEach(function(r){
+      var moved = prev!==null && Math.abs(r.ratePerParcel-prev)>0.000001;
+      h+='<tr'+(moved?' style="background:var(--brand-tint)"':'')+'>'+
+         '<td>'+esc(r.month)+'</td>'+
+         '<td class="right num">'+money(r.baseRate)+'</td>'+
+         '<td class="right num">'+pct(r.surchargePct,4)+'</td>'+
+         '<td class="right num">'+money(r.surchargeAmt)+'</td>'+
+         '<td class="right num"><strong>'+money(r.ratePerParcel)+'</strong></td>'+
+         '<td class="right num muted">'+pct(r.methodMix)+'</td>'+
+         '<td class="right num">'+money(r.contribution)+'</td></tr>';
+      prev=r.ratePerParcel;
+    });
+    h+='</tbody></table>';
+    h+='<div class="small muted" style="padding:8px 12px">Highlighted rows are months where the '+
+       'rate per parcel changes. A mid-month surcharge change shows here as a blended figure.</div>';
+    el.innerHTML=h;
+  }, function(m){
+    var el=document.getElementById('resolved');
+    if(el) el.innerHTML='<div class="empty">'+esc(m)+'</div>';
+  }, true);
+}
+
+/* ---- rate editors ---- */
+function editBase(id){
+  var r = id ? S.rateBase.filter(function(x){return x.id===id;})[0] : null;
+  openForm({
+    title: (id?'Edit base rate':'Add a base rate change'),
+    intro: 'For '+esc(mdName(S.sel.modellingId))+'. A new period automatically shortens '+
+           'whichever one is running when it starts.',
+    fields:[
+      {key:'validFrom', label:'Effective from', type:'date', required:true,
+       value: r?r.validFrom:todayOrHorizon(),
+       hint:'Rates apply from the 1st of the month, so a change mid-month takes effect the following month.'},
+      {key:'validTo', label:'Until', type:'date', required:true, openEnded:true,
+       value: r?r.validTo:'9999-12-31'},
+      {key:'value', label:'Rate per parcel', type:'number', step:'0.0001', min:0, required:true,
+       value: r?r.value:'', suffix:(r&&r.currency)||'',
+       placeholder:'3.7800'},
+      {key:'sourceRef', label:'Where it came from', type:'text',
+       value: r?r.sourceRef:'', placeholder:'RM 2026 tariff, p.4',
+       hint:'Optional, but it is what tells you months later why the number is what it is.'}
+    ],
+    onSave:function(v, done, fail){
+      call('saveBaseRate',[{ id:id||0, modellingId:S.sel.modellingId,
+        validFrom:v.validFrom, validTo:v.validTo, value:Number(v.value),
+        sourceRef:v.sourceRef, closePrevious:!id }],
+        function(res){ done(); showOk(res.isNew?'Rate added.':'Rate updated.'); reloadData(); },
+        fail);
+    }
+  });
+}
+
+function delBase(id){
+  if(!confirm('Delete this base rate? It is marked inactive, and history is kept.')) return;
+  call('deleteBaseRate',[id],function(){ showOk('Rate deleted.'); reloadData(); });
+}
+function editSurcharge(id){
+  var r = id ? S.rateSurcharge.filter(function(x){return x.id===id;})[0] : null;
+  var code = r?r.code:(S.surchargeTypes[0]&&S.surchargeTypes[0].code);
+  var def = S.surchargeTypes.filter(function(s){return s.code===code;})[0]||{valueType:'AMT'};
+  openForm({
+    title:(id?'Edit surcharge':'Add a surcharge'),
+    intro:'For '+esc(mdName(S.sel.modellingId))+'.',
+    fields:[
+      {key:'code', label:'Type', type:'select', required:true, value:code,
+       options:S.surchargeTypes.map(function(s){
+         return {value:s.code, label:s.name+' — '+(s.valueType==='PCT'?'percentage of base':'fixed amount')}; }),
+       hint:'Percentages go in as a fraction: 0.14 for 14%. Fixed amounts go in as currency.'},
+      {key:'validFrom', label:'Effective from', type:'date', required:true,
+       value:r?r.validFrom:todayOrHorizon(),
+       hint:'Surcharges are day-weighted, so a change mid-month gives that month a blended figure.'},
+      {key:'validTo', label:'Until', type:'date', required:true, openEnded:true,
+       value:r?r.validTo:'9999-12-31'},
+      {key:'value', label:'Value', type:'number', step:'0.0001', required:true,
+       value:r?r.value:'', placeholder: def.valueType==='PCT'?'0.1400':'0.0500'}
+    ],
+    onSave:function(v, done, fail){
+      call('saveSurchargeRate',[{ id:id||0, modellingId:S.sel.modellingId,
+        code:v.code, validFrom:v.validFrom, validTo:v.validTo,
+        value:Number(v.value), closePrevious:!id }],
+        function(res){ done(); showOk(res.isNew?'Surcharge added.':'Surcharge updated.'); reloadData(); },
+        fail);
+    }
+  });
+}
+
+function delSurcharge(id){
+  if(!confirm('Delete this surcharge?')) return;
+  call('deleteSurchargeRate',[id],function(){ showOk('Surcharge deleted.'); reloadData(); });
+}
+
+function reloadData(){
+  call('loadAllAppData',[],function(d){
+    S.rateBase=d.rateBase; S.rateSurcharge=d.rateSurcharge;
+    S.mixMethod=d.mixMethod; S.mixLP=d.mixLetterParcel; S.mixCC=d.mixColdChain;
+    S.output=d.output; S.validation=d.validation; S.recentAudit=d.recentAudit;
+    S.actuals=d.actuals||[]; S.snapshots=d.snapshots||[]; S.status=d.status;
+    renderStatus(); renderAll();
+  },null,true);
+}
+
+/* ===================================================================
+   Mixes
+   =================================================================== */
+var mixGrid=null;
+
+function viewMixes(){
+  if(!S.loaded) return '<div class="card"><div class="body">'+loading()+'</div></div>';
+  var sec=S.sel.mixSection||'method';
+  var tabs=[['method','Delivery method mix'],['lp','Letter / parcel split'],
+            ['cc','Cold chain share']];
+  var h='<div class="card"><div class="body" style="padding:10px 12px">';
+  h+='<div style="display:flex;gap:2px">'+tabs.map(function(t){
+     return '<button class="btn sm'+(sec===t[0]?' primary':'')+'" data-ms="'+t[0]+'">'+
+            t[1]+'</button>'; }).join('')+'</div>';
+  h+='</div></div>';
+  if(sec==='method') h+=viewMixMethod();
+  if(sec==='lp')     h+=viewMixLP();
+  if(sec==='cc')     h+=viewMixCC();
+  return h;
+}
+
+function wireMixes(){
+  Array.prototype.forEach.call(document.querySelectorAll('[data-ms]'),function(b){
+    b.onclick=function(){ S.sel.mixSection=b.getAttribute('data-ms'); renderAll(); };
+  });
+  var sec=S.sel.mixSection||'method';
+  if(sec==='method') wireMixMethod();
+  if(sec==='lp')     wireMixLP();
+}
+
+/* ---- delivery method mix ---- */
+function viewMixMethod(){
+  var h='<div class="card"><div class="body"><div class="row" style="margin:0">';
+  h+='<div class="field" style="min-width:280px"><label>High Level ID</label>'+
+     '<select id="mHl">'+S.hlIds.map(function(x){
+        return '<option value="'+x.id+'"'+(x.id===S.sel.hlId?' selected':'')+'>'+
+               x.id+' — '+esc(hlName(x.id))+'</option>';}).join('')+'</select></div>';
+  h+='<div class="field"><label>Regime</label><select id="mReg">'+
+     ['CC','AMBIENT'].map(function(v){return '<option'+(v===S.sel.regime?' selected':'')+'>'+v+'</option>';}).join('')+
+     '</select></div>';
+  h+='<div class="field"><label>Class</label><select id="mLp">'+
+     ['PARCEL','LETTER'].map(function(v){return '<option'+(v===S.sel.lp?' selected':'')+'>'+v+'</option>';}).join('')+
+     '</select></div>';
+  h+='<div class="field"><label>As at</label><input type="date" id="mAsAt" value="'+esc(S.sel.asAt||'')+'"></div>';
+  h+='</div></div></div><div id="mixHost"></div>';
+  return h;
+}
+function wireMixMethod(){
+  var hl=document.getElementById('mHl');
+  if(hl) hl.onchange=function(){ S.sel.hlId=Number(hl.value); loadMixGrid(); };
+  ['mReg','mLp','mAsAt'].forEach(function(id){
+    var el=document.getElementById(id);
+    if(el) el.onchange=function(){
+      S.sel.regime=document.getElementById('mReg').value;
+      S.sel.lp=document.getElementById('mLp').value;
+      S.sel.asAt=document.getElementById('mAsAt').value;
+      loadMixGrid();
+    };
+  });
+  loadMixGrid();
+}
+
+/* ---- the grid itself ---- */
+function loadMixGrid(){
+  var host=document.getElementById('mixHost'); if(!host) return;
+  host.innerHTML='<div class="card"><div class="body">'+loading()+'</div></div>';
+  call('getMethodMixGrid',[{hlId:S.sel.hlId,regime:S.sel.regime,
+       letterParcel:S.sel.lp,asAt:S.sel.asAt}],function(g){
+    mixGrid=g; renderMixGrid();
+  },function(m){ host.innerHTML='<div class="card"><div class="empty">'+esc(m)+'</div></div>'; },true);
+}
+function renderMixGrid(){
+  var host=document.getElementById('mixHost'); if(!host||!mixGrid) return;
+  var g=mixGrid, canEdit=g.canEdit&&can('editMixes');
+  var h='<div class="card"><h2>'+esc(hlName(g.hlId))+' · '+esc(g.regime)+' · '+esc(g.letterParcel)+'</h2>';
+  h+='<div class="body" style="padding:0"><table><thead><tr>'+
+     '<th>Carrier</th><th>Method</th><th class="right" style="width:120px">Mix</th>'+
+     '<th class="right">Rate/parcel</th><th class="right">Contribution</th></tr></thead><tbody>';
+  g.rows.forEach(function(r,i){
+    h+='<tr><td>'+esc(r.carrier)+'</td><td>'+esc(r.method)+'</td>'+
+       '<td class="right"><input type="number" step="0.01" min="0" max="100" data-i="'+i+'" '+
+       'class="mixin right num" style="width:100px;text-align:right" '+
+       (canEdit?'':'disabled ')+'value="'+(r.value*100).toFixed(2)+'"></td>'+
+       '<td class="right num muted">'+money(r.ratePerParcel)+'</td>'+
+       '<td class="right num" data-c="'+i+'">'+money(r.contribution)+'</td></tr>';
+  });
+  h+='</tbody></table>';
+  h+='<div class="total" id="mixTotal"></div>';
+  if(canEdit){
+    h+='<div class="body" style="border-top:1px solid var(--line)"><div class="row" style="margin:0">'+
+       '<div class="field"><label>Effective from</label><input type="date" id="mFrom" value="'+esc(g.asAt)+'"></div>'+
+       '<div class="field"><label>To</label><input type="date" id="mTo" value="2028-12-31"></div>'+
+       '<button class="btn" id="mNorm">Normalise to 100%</button>'+
+       '<button class="btn primary" id="mSave">Save grid</button></div></div>';
+  }
+  h+='</div></div>';
+  host.innerHTML=h;
+
+  Array.prototype.forEach.call(document.querySelectorAll('.mixin'),function(inp){
+    inp.oninput=function(){ recalcMixTotal(); };
+  });
+  var n=document.getElementById('mNorm');
+  if(n) n.onclick=function(){
+    call('normaliseMixRows',[readMixInputs()],function(scaled){
+      scaled.forEach(function(s,i){
+        var inp=document.querySelector('.mixin[data-i="'+i+'"]');
+        if(inp) inp.value=(s.value*100).toFixed(4);
+      });
+      recalcMixTotal();
+    });
+  };
+  var sv=document.getElementById('mSave');
+  if(sv) sv.onclick=saveMixGrid;
+  recalcMixTotal();
+}
+function readMixInputs(){
+  return mixGrid.rows.map(function(r,i){
+    var inp=document.querySelector('.mixin[data-i="'+i+'"]');
+    return { modellingId:r.modellingId, value: inp ? (Number(inp.value)||0)/100 : r.value };
+  });
+}
+function recalcMixTotal(){
+  if(!mixGrid) return;
+  var rows=readMixInputs(), tot=0, blended=0;
+  rows.forEach(function(r,i){
+    tot+=r.value;
+    blended+=r.value*mixGrid.rows[i].ratePerParcel;
+    var c=document.querySelector('[data-c="'+i+'"]');
+    if(c) c.textContent=money(r.value*mixGrid.rows[i].ratePerParcel);
+  });
+  var ok=Math.abs(tot-1)<=0.0005;
+  var el=document.getElementById('mixTotal');
+  if(el){
+    el.className='total '+(ok?'good':'bad');
+    el.innerHTML='<span style="flex:1">Total</span><span class="num">'+pct(tot)+'</span>'+
+      (ok?'<span class="small">ok</span>':'<span class="small">must be 100%</span>')+
+      '<span style="margin-left:24px" class="muted small">Blended</span>'+
+      '<span class="num">'+money(blended)+'</span>';
+  }
+  var sv=document.getElementById('mSave'); if(sv) sv.disabled=!ok;
+}
+function saveMixGrid(){
+  var from=document.getElementById('mFrom').value, to=document.getElementById('mTo').value;
+  if(!from||!to) return showError('Enter both dates.');
+  call('saveMethodMixGrid',[{hlId:mixGrid.hlId,regime:mixGrid.regime,
+    letterParcel:mixGrid.letterParcel,validFrom:from,validTo:to,rows:readMixInputs()}],
+    function(res){ showOk('Saved '+res.written+' routes.'); loadMixGrid(); reloadData(); });
+}
+
+/* ---- letter / parcel split ---- */
+var lpGrid=null;
+
+function viewMixLP(){
+  var h='<div class="card"><div class="body"><div class="row" style="margin:0">';
+  h+='<div class="field" style="min-width:280px"><label>High Level ID</label>'+
+     '<select id="lHl">'+S.hlIds.map(function(x){
+        return '<option value="'+x.id+'"'+(x.id===S.sel.hlId?' selected':'')+'>'+
+               x.id+' — '+esc(hlName(x.id))+'</option>';}).join('')+'</select></div>';
+  h+='<div class="field"><label>As at</label><input type="date" id="lAsAt" value="'+esc(S.sel.asAt||'')+'"></div>';
+  h+='</div></div></div><div id="lpHost"></div>';
+  return h;
+}
+
+function wireMixLP(){
+  var hl=document.getElementById('lHl');
+  if(hl) hl.onchange=function(){ S.sel.hlId=Number(hl.value); loadLpGrid(); };
+  var d=document.getElementById('lAsAt');
+  if(d) d.onchange=function(){ S.sel.asAt=d.value; loadLpGrid(); };
+  loadLpGrid();
+}
+
+function loadLpGrid(){
+  var host=document.getElementById('lpHost'); if(!host) return;
+  host.innerHTML='<div class="card"><div class="body">'+loading()+'</div></div>';
+  call('getLetterParcelGrid',[{hlId:S.sel.hlId,asAt:S.sel.asAt}],function(g){
+    lpGrid=g; renderLpGrid();
+  },function(m){ host.innerHTML='<div class="card"><div class="empty">'+esc(m)+'</div></div>'; },true);
+}
+
+function renderLpGrid(){
+  var host=document.getElementById('lpHost'); if(!host||!lpGrid) return;
+  var g=lpGrid, canEdit=g.canEdit&&can('editMixes');
+
+  var h='<div class="card"><h2>'+esc(hlName(g.hlId))+
+     ' <span class="small muted" style="font-weight:400">— what proportion goes each way</span></h2>';
+  h+='<div class="body" style="padding:0"><table><thead><tr>'+
+     '<th>Class</th><th class="right">Routes</th><th class="right" style="width:130px">Share</th>'+
+     '<th class="right">Blended rate</th><th class="right">Contribution</th></tr></thead><tbody>';
+  g.rows.forEach(function(r,i){
+    var warn = r.share>0 && r.routes===0;
+    h+='<tr'+(warn?' style="background:#FDEBED"':'')+'>'+
+       '<td>'+(r.cls==='LETTER'?'Letterbox':'Parcel')+
+       (warn?' <span class="sev ERROR">no routes</span>':'')+'</td>'+
+       '<td class="right num muted">'+r.routes+'</td>'+
+       '<td class="right"><input type="number" step="0.01" min="0" max="100" data-lp="'+i+'" '+
+       'class="lpin right num" style="width:110px;text-align:right" '+
+       (canEdit?'':'disabled ')+'value="'+(r.share*100).toFixed(2)+'"></td>'+
+       '<td class="right num muted">'+money(r.blendedRate)+'</td>'+
+       '<td class="right num" data-lpc="'+i+'">'+money(r.contribution)+'</td></tr>';
+  });
+  h+='</tbody></table>';
+  h+='<div class="total" id="lpTotal"></div>';
+
+  if(canEdit){
+    h+='<div class="body" style="border-top:1px solid var(--line)"><div class="row" style="margin:0">'+
+       '<div class="field"><label>Effective from</label><input type="date" id="lFrom" value="'+
+       esc(g.validFrom||g.asAt)+'"></div>'+
+       '<div class="field"><label>To</label><input type="date" id="lTo" value="'+
+       esc(g.validTo&&g.validTo<'9999-01-01'?g.validTo:'2028-12-31')+'"></div>'+
+       '<button class="btn primary" id="lSave">Save split</button></div>';
+    h+='<div class="small muted" style="margin-top:8px">Type into either row — the other '+
+       'adjusts so the two always total 100%. Only the letterbox share is stored; parcel is '+
+       'the remainder, so they can never disagree.</div></div>';
+  }
+  if(!g.hasLetterRoutes){
+    h+='<div class="body" style="border-top:1px solid var(--line)" class="small muted">'+
+       '<div class="small muted">This segment has no letterbox routes, so the split stays at '+
+       '0% letters. Add letterbox routes under Admin if that should change — the letterbox '+
+       'services are separate methods, such as RoyalMailTracked24Letterbox.</div></div>';
+  }
+  h+='</div></div>';
+
+  h+='<div class="card"><h2>Periods on record</h2><div class="body" style="padding:0">';
+  h+='<table><thead><tr><th>From</th><th>To</th><th class="right">Letterbox</th>'+
+     '<th class="right">Parcel</th><th></th></tr></thead><tbody>';
+  if(!g.periods.length) h+='<tr><td colspan="5" class="empty">Nothing set — treated as 100% parcel.</td></tr>';
+  g.periods.forEach(function(r){
+    var live = r.validFrom<=g.asAt && r.validTo>=g.asAt;
+    h+='<tr'+(live?' class="sel"':'')+'><td class="num">'+esc(r.validFrom)+'</td>'+
+       '<td class="num">'+(r.validTo>='9999-01-01'?'<span class="pill">open-ended</span>':esc(r.validTo))+'</td>'+
+       '<td class="right num">'+pct(r.letter)+'</td>'+
+       '<td class="right num muted">'+pct(1-r.letter)+'</td>'+
+       '<td class="right">'+(canEdit?'<button class="btn sm danger" data-dlp="'+r.id+'">Delete</button>':'')+'</td></tr>';
+  });
+  h+='</tbody></table>';
+  h+='<div class="small muted" style="padding:8px 12px">The highlighted row is the one in '+
+     'force on '+esc(g.asAt)+'. Saving a new period trims whatever it overlaps rather than '+
+     'refusing, so you never have to tidy up first.</div>';
+  h+='</div></div>';
+  host.innerHTML=h;
+
+  Array.prototype.forEach.call(document.querySelectorAll('.lpin'),function(inp){
+    inp.oninput=function(){
+      var i=Number(inp.getAttribute('data-lp'));
+      var other=document.querySelector('.lpin[data-lp="'+(1-i)+'"]');
+      var v=Number(inp.value)||0;
+      if(other) other.value=(100-v).toFixed(2);
+      recalcLpTotal();
+    };
+  });
+  var sv=document.getElementById('lSave');
+  if(sv) sv.onclick=saveLpGrid;
+  Array.prototype.forEach.call(document.querySelectorAll('[data-dlp]'),function(b){
+    b.onclick=function(){
+      if(!confirm('Delete this period? The segment then falls back to whatever other '+
+                  'period covers those months, or 100% parcel if none does.')) return;
+      call('deleteLetterParcelMix',[Number(b.getAttribute('data-dlp'))],function(){
+        showOk('Period deleted.'); loadLpGrid(); reloadData(); });
+    };
+  });
+  recalcLpTotal();
+}
+
+function readLpInputs(){
+  return [0,1].map(function(i){
+    var inp=document.querySelector('.lpin[data-lp="'+i+'"]');
+    return inp ? (Number(inp.value)||0)/100 : lpGrid.rows[i].share;
+  });
+}
+function recalcLpTotal(){
+  if(!lpGrid) return;
+  var v=readLpInputs(), tot=v[0]+v[1], blended=0;
+  v.forEach(function(share,i){
+    var contrib=share*lpGrid.rows[i].blendedRate;
+    blended+=contrib;
+    var c=document.querySelector('[data-lpc="'+i+'"]');
+    if(c) c.textContent=money(contrib);
+  });
+  var ok=Math.abs(tot-1)<=0.0005;
+  var el=document.getElementById('lpTotal');
+  if(el){
+    el.className='total '+(ok?'good':'bad');
+    el.innerHTML='<span style="flex:1">Total</span><span class="num">'+pct(tot)+'</span>'+
+      (ok?'<span class="small">ok</span>':'<span class="small">must be 100%</span>')+
+      '<span style="margin-left:24px" class="muted small">Blended per order</span>'+
+      '<span class="num">'+money(blended)+'</span>';
+  }
+  var sv=document.getElementById('lSave'); if(sv) sv.disabled=!ok;
+}
+function saveLpGrid(){
+  var from=document.getElementById('lFrom').value, to=document.getElementById('lTo').value;
+  if(!from||!to) return showError('Enter both dates.');
+  var v=readLpInputs();
+  call('saveLetterParcelGrid',[{hlId:lpGrid.hlId,validFrom:from,validTo:to,
+    letterShare:v[0]}],function(res){
+    showOk('Saved — '+(res.letter*100).toFixed(2)+'% letterbox, '+
+           (res.parcel*100).toFixed(2)+'% parcel'+
+           (res.cleared?' ('+res.cleared+' period(s) trimmed)':'')+'.');
+    loadLpGrid(); reloadData();
+  });
+}
+
+/* ---- cold chain, read only ---- */
+function viewMixCC(){
+  var h='<div class="card"><h2>Cold chain share <span class="small muted">— read only</span></h2>'+
+     '<div class="body" style="padding:0">';
+  h+='<table><thead><tr><th>High Level ID</th><th>From</th><th>To</th>'+
+     '<th class="right">Cold chain</th><th class="right">Ambient</th></tr></thead><tbody>';
+  var rows=S.mixCC.slice().sort(function(a,b){
+    return (a.hlId-b.hlId) || (a.validFrom<b.validFrom?-1:1); });
+  if(!rows.length) h+='<tr><td colspan="5" class="empty">Nothing set — every segment is treated as 100% ambient.</td></tr>';
+  rows.forEach(function(r){
+    h+='<tr><td class="small">'+r.hlId+' — '+esc(hlName(r.hlId))+'</td>'+
+       '<td class="num">'+esc(r.validFrom)+'</td><td class="num">'+esc(r.validTo)+'</td>'+
+       '<td class="right num">'+pct(r.value)+'</td>'+
+       '<td class="right num muted">'+pct(1-r.value)+'</td></tr>';
+  });
+  h+='</tbody></table>';
+  h+='<div class="small muted" style="padding:8px 12px">Cold chain was left out of scope, so '+
+     'there is no editor here yet — but it is shown because it drives the blend between the '+
+     'two method mixes. Segments with no rows are treated as 100% ambient. Edit it directly '+
+     'in the Mix_ColdChain tab if you need to.</div>';
+  h+='</div></div>';
+  return h;
+}
+
+/* ===================================================================
+   Validation
+   =================================================================== */
+function viewValidation(){
+  if(!S.loaded) return '<div class="card"><div class="body">'+loading()+'</div></div>';
+  var h='<div class="card"><h2>Checks'+
+        (can('runCalc')?'<button class="btn sm" id="reval" style="float:right;margin-top:-3px">Re-run</button>':'')+
+        '</h2><div class="body" style="padding:0">';
+  if(!S.validation.length) h+='<div class="empty">Nothing to report.</div>';
+  else{
+    h+='<table><thead><tr><th style="width:70px">Severity</th><th style="width:150px">Rule</th>'+
+       '<th>Message</th></tr></thead><tbody>';
+    ['ERROR','WARN','INFO'].forEach(function(sev){
+      S.validation.filter(function(v){return v.severity===sev;}).forEach(function(v){
+        h+='<tr><td><span class="sev '+sev+'">'+sev+'</span></td><td class="small">'+
+           esc(v.rule)+'</td><td class="small">'+esc(v.message)+'</td></tr>';
+      });
+    });
+    h+='</tbody></table>';
+  }
+  h+='</div></div>';
+  return h;
+}
+
+function wireValidation(){
+  var b=document.getElementById('reval');
+  if(!b) return;
+  b.onclick=function(){
+    b.disabled=true; b.textContent='Running…';
+    call('runValidation',[1],function(){
+      showOk('Validation re-run.');
+      reloadData();
+    }, function(m){ b.disabled=false; b.textContent='Re-run'; showError(m); });
+  };
+}
+
+/* ===================================================================
+   Output
+   =================================================================== */
+
+/* Which years does the horizon cover, and which one are we in? */
+function horizonYears(){
+  var y={};
+  S.calendar.filter(function(c){return c.inHorizon;}).forEach(function(c){
+    y[Number(String(c.monthStart).slice(0,4))]=true; });
+  return Object.keys(y).map(Number).sort(function(a,b){return a-b;});
+}
+function defaultDashYear(){
+  var ys=horizonYears(), now=new Date().getFullYear();
+  return ys.indexOf(now)>=0 ? now : (ys[0]||now);
+}
+
+/* ===================================================================
+   Forecast vs actual by quarter — GB weight loss
+   =================================================================== */
+
+/* Segments that differ only by split — five of your pairs do. Worth surfacing,
+   because they are usually identical and it matters when they stop being. */
+function siblingSegments(hlId){
+  var me=S.hlIds.filter(function(h){return h.id===hlId;})[0];
+  if(!me) return [];
+  return S.hlIds.filter(function(h){
+    return h.id!==hlId && h.brand===me.brand && h.geo===me.geo &&
+           h.treatmentType===me.treatmentType;
+  }).sort(function(a,b){ return a.id-b.id; });
+}
+
+/* Opens on GB weight loss where it exists, since that is the one usually wanted. */
+function defaultChartHl(){
+  var gb=S.hlIds.filter(function(h){ return h.geo==='GB' && h.treatmentType==='WL'; })
+                .sort(function(a,b){ return a.id-b.id; });
+  if(gb.length) return gb[0].id;
+  return S.hlIds.length ? S.hlIds[0].id : null;
+}
+
+/* Per-quarter mean forecast and mean actual for one segment and year. */
+function quarterSeries(year, hlId){
+  var months=S.calendar.filter(function(c){return c.inHorizon;});
+  var q={1:[],2:[],3:[],4:[]};
+  months.forEach(function(m){
+    if(Number(String(m.monthStart).slice(0,4))!==year) return;
+    var mm=Number(String(m.monthStart).slice(5,7));
+    q[Math.ceil(mm/3)].push(m);
+  });
+  var fByDate={};
+  S.output.forEach(function(r){ if(r.hlId===hlId) fByDate[r.dateId]=r.rate; });
+  var aByMonth={};
+  (S.actuals||[]).forEach(function(a){ if(a.hlId===hlId) aByMonth[a.monthStart]=a.blendedRate; });
+  function mean(v){ return v.length ? v.reduce(function(x,y){return x+y;},0)/v.length : null; }
+  return [1,2,3,4].map(function(n){
+    var ms=q[n];
+    return { q:n, label:'Q'+n+' '+String(year).slice(2), exists:ms.length>0,
+      forecast: mean(ms.map(function(m){return fByDate[m.dateId];})
+                       .filter(function(v){return v!==undefined;})),
+      actual:   mean(ms.map(function(m){return aByMonth[m.monthStart];})
+                       .filter(function(v){return v!==undefined;})) };
+  });
+}
+
+/* Grouped bars as inline SVG. No chart library — one less dependency, and it
+   keeps the whole interface in a single file. */
+function groupedBars(data, show){
+  var W=760, H=300, padL=58, padR=16, padT=16, padB=46;
+  var plotW=W-padL-padR, plotH=H-padT-padB;
+
+  var vals=[];
+  data.forEach(function(d){
+    if(show['f'+d.q] && d.forecast!==null) vals.push(d.forecast);
+    if(show['a'+d.q] && d.actual!==null)   vals.push(d.actual);
+  });
+  if(!vals.length) return '<div class="empty">Nothing selected, or no data for those quarters.</div>';
+
+  var max=Math.max.apply(null,vals);
+  var step=Math.pow(10,Math.floor(Math.log(max)/Math.LN10))/2;
+  var top=Math.ceil(max/step)*step;
+  if(!(top>0)) top=1;
+
+  var groupW=plotW/data.length;
+  var y=function(v){ return padT+plotH-(v/top)*plotH; };
+
+  var s='<svg viewBox="0 0 '+W+' '+H+'" width="100%" height="'+H+
+        '" style="display:block;max-width:'+W+'px" role="img" '+
+        'aria-label="Forecast against actual blended rate per order, by quarter">';
+
+  for(var g=0; g<=4; g++){
+    var v=top*g/4, yy=y(v);
+    s+='<line x1="'+padL+'" y1="'+yy.toFixed(1)+'" x2="'+(padL+plotW)+'" y2="'+yy.toFixed(1)+
+       '" stroke="var(--line)" stroke-width="1"/>';
+    s+='<text x="'+(padL-8)+'" y="'+(yy+4).toFixed(1)+'" text-anchor="end" '+
+       'font-size="11" fill="var(--ink-3)">'+v.toFixed(2)+'</text>';
+  }
+
+  data.forEach(function(d,i){
+    var gx=padL+i*groupW;
+    var bars=[];
+    if(show['f'+d.q]) bars.push({v:d.forecast, c:'#0000FF', n:'Forecast'});
+    if(show['a'+d.q]) bars.push({v:d.actual,   c:'#0B0B0F', n:'Actual'});
+    var gap=(bars.length>1?6:0);
+    var bw=Math.min(46,(groupW*0.62-gap)/Math.max(bars.length,1));
+    var totalW=bw*bars.length+gap*(bars.length-1);
+    var startX=gx+(groupW-totalW)/2;
+
+    bars.forEach(function(b,j){
+      var bx=startX+j*(bw+gap);
+      if(b.v===null){
+        // an absent actual is drawn as an outline, not omitted, so the gap is visible
+        s+='<rect x="'+bx.toFixed(1)+'" y="'+(y(0)-14).toFixed(1)+'" width="'+bw.toFixed(1)+
+           '" height="14" fill="none" stroke="'+b.c+'" stroke-width="1" '+
+           'stroke-dasharray="3 2" opacity="0.4" rx="2"/>';
+        s+='<text x="'+(bx+bw/2).toFixed(1)+'" y="'+(y(0)-20).toFixed(1)+
+           '" text-anchor="middle" font-size="10" fill="var(--ink-3)">none</text>';
+        return;
+      }
+      var bh=Math.max(plotH-(y(b.v)-padT),1);
+      s+='<rect x="'+bx.toFixed(1)+'" y="'+y(b.v).toFixed(1)+'" width="'+bw.toFixed(1)+
+         '" height="'+bh.toFixed(1)+'" fill="'+b.c+'" rx="2"><title>'+
+         d.label+' '+b.n+': '+b.v.toFixed(4)+'</title></rect>';
+      s+='<text x="'+(bx+bw/2).toFixed(1)+'" y="'+(y(b.v)-5).toFixed(1)+
+         '" text-anchor="middle" font-size="10" fill="var(--ink-2)" '+
+         'font-variant-numeric="tabular-nums">'+b.v.toFixed(2)+'</text>';
+    });
+
+    s+='<text x="'+(gx+groupW/2).toFixed(1)+'" y="'+(padT+plotH+20)+
+       '" text-anchor="middle" font-size="12" fill="var(--ink-2)">'+d.label+'</text>';
+  });
+
+  s+='<line x1="'+padL+'" y1="'+y(0).toFixed(1)+'" x2="'+(padL+plotW)+'" y2="'+y(0).toFixed(1)+
+     '" stroke="var(--line-2)" stroke-width="1"/></svg>';
+  return s;
+}
+
+function viewRateChart(){
+  if(!S.hlIds.length) return '<div class="card"><h2>Forecast against actual</h2>'+
+         '<div class="empty">No segments defined.</div></div>';
+
+  if(!S.sel.chartHl || !S.hlIds.some(function(h){return h.id===S.sel.chartHl;})){
+    S.sel.chartHl=defaultChartHl();
+  }
+  var hlId=S.sel.chartHl;
+  var seg=S.hlIds.filter(function(h){return h.id===hlId;})[0];
+  var year=S.sel.dashYear||defaultDashYear();
+  var data=quarterSeries(year, hlId);
+  var show=S.sel.chartSeries||{};
+
+  // does the segment that differs only by split still agree?
+  var sibs=siblingSegments(hlId), divergence=null, sibName='';
+  if(sibs.length){
+    sibName=sibs[0].wlSplit;
+    var other=quarterSeries(year, sibs[0].id), worst=0;
+    data.forEach(function(d,i){
+      if(d.forecast!==null && other[i].forecast!==null)
+        worst=Math.max(worst, Math.abs(d.forecast-other[i].forecast));
+    });
+    if(worst>0.0001) divergence=worst;
+  }
+
+  var h='<div class="card"><h2>Forecast against actual'+
+        '<span class="small muted" style="font-weight:400"> · blended rate per order</span></h2>';
+
+  h+='<div class="body" style="padding:12px 16px;border-bottom:1px solid var(--line)">';
+  h+='<div class="row" style="margin:0 0 12px 0">';
+  h+='<div class="field" style="min-width:330px"><label>Segment</label>'+
+     '<select id="chHl">'+S.hlIds.map(function(x){
+        return '<option value="'+x.id+'"'+(x.id===hlId?' selected':'')+'>'+
+               esc(x.brand+' · '+x.geo+' · '+treatmentLabel(x))+'</option>';}).join('')+
+     '</select></div>';
+  h+='<div class="field"><label>Year</label>'+
+     '<select id="chYear">'+horizonYears().map(function(y){
+        return '<option value="'+y+'"'+(y===year?' selected':'')+'>'+y+'</option>';}).join('')+
+     '</select></div>';
+  h+='</div>';
+
+  h+='<div style="display:flex;gap:28px;flex-wrap:wrap;align-items:flex-start">';
+  [['f','Forecast','#0000FF'],['a','Actual','#0B0B0F']].forEach(function(g){
+    h+='<div><div class="small muted" style="margin-bottom:6px">'+
+       '<span style="display:inline-block;width:10px;height:10px;background:'+g[2]+';'+
+       'border-radius:2px;margin-right:6px"></span>'+g[1]+'</div>';
+    h+='<div style="display:flex;gap:12px">'+[1,2,3,4].map(function(n){
+       return '<label class="small" style="cursor:pointer;white-space:nowrap">'+
+              '<input type="checkbox" data-cs="'+g[0]+n+'"'+
+              (show[g[0]+n]?' checked':'')+'> Q'+n+'</label>'; }).join('')+'</div></div>';
+  });
+  h+='<div style="margin-left:auto;display:flex;gap:6px;align-self:flex-end">'+
+     '<button class="btn sm" id="csAll">All</button>'+
+     '<button class="btn sm" id="csF">Forecast only</button>'+
+     '<button class="btn sm" id="csA">Actual only</button></div>';
+  h+='</div></div>';
+
+  h+='<div class="body">'+groupedBars(data, show)+'</div>';
+
+  var anyActual=data.some(function(d){ return d.actual!==null; });
+  h+='<div class="body small muted" style="border-top:1px solid var(--line)">';
+  h+= anyActual
+    ? 'Quarterly means of the monthly blended rate. Dashed outlines are quarters with no actuals recorded yet.'
+    : ('No actuals recorded for '+esc(hlName(hlId))+' in '+year+' yet, so the dashed outlines '+
+       'are placeholders. Add months on the Actuals tab and the black bars fill in.');
+  if(divergence!==null){
+    h+='<div style="margin-top:8px;color:var(--warn)"><strong>Note:</strong> '+
+       esc(seg.wlSplit)+' and '+esc(sibName)+' no longer match — up to '+
+       money(divergence)+' apart in '+year+'. They usually move together, so it is worth '+
+       'checking whether that is intended.</div>';
+  } else if(sibs.length){
+    h+=' '+esc(seg.wlSplit)+' and '+esc(sibName)+' are identical here, so these bars cover both.';
+  }
+  h+='</div></div>';
+  return h;
+}
+
+function wireRateChart(){
+  var sel=document.getElementById('chHl');
+  if(sel) sel.onchange=function(){ S.sel.chartHl=Number(sel.value); renderAll(); };
+  var yr=document.getElementById('chYear');
+  if(yr) yr.onchange=function(){ S.sel.dashYear=Number(yr.value); renderAll(); };
+  Array.prototype.forEach.call(document.querySelectorAll('[data-cs]'),function(cb){
+    cb.onchange=function(){
+      S.sel.chartSeries[cb.getAttribute('data-cs')]=cb.checked;
+      renderAll();
+    };
+  });
+  function setAll(f,a){
+    [1,2,3,4].forEach(function(n){
+      S.sel.chartSeries['f'+n]=f; S.sel.chartSeries['a'+n]=a; });
+    renderAll();
+  }
+  var b;
+  if((b=document.getElementById('csAll'))) b.onclick=function(){ setAll(true,true); };
+  if((b=document.getElementById('csF')))   b.onclick=function(){ setAll(true,false); };
+  if((b=document.getElementById('csA')))   b.onclick=function(){ setAll(false,true); };
+}
+
+/* Treatment plus split in one column, so three columns still identify a segment.
+   Brand + location + treatment alone is ambiguous for 10 of the 17 — MedExpress
+   GB WL appears twice, differing only by Mounjaro vs WeGovy. */
+function treatmentLabel(h){
+  if(!h) return '';
+  var t=h.treatmentType==='CORE_RX'?'Core Rx':h.treatmentType;
+  if(!h.wlSplit || h.wlSplit==='*') return t;
+  var s=h.wlSplit.charAt(0)+h.wlSplit.slice(1).toLowerCase();
+  if(h.wlSplit==='WEGOVY') s='WeGovy';
+  return t+' · '+s;
+}
+
+/* Dashboard: quarters of the chosen year. */
+function outputSummary(){
+  if(!S.output.length) return '<div class="empty">Nothing published yet.</div>';
+  var ys=horizonYears();
+  var year=S.sel.dashYear||defaultDashYear();
+  var months=S.calendar.filter(function(c){return c.inHorizon;})
+             .sort(function(a,b){return a.dateId-b.dateId;});
+  var byHl={};
+  S.output.forEach(function(r){ (byHl[r.hlId]=byHl[r.hlId]||{})[r.dateId]=r.rate; });
+
+  var q={1:[],2:[],3:[],4:[]};
+  months.forEach(function(m){
+    if(Number(String(m.monthStart).slice(0,4))!==year) return;
+    var mm=Number(String(m.monthStart).slice(5,7));
+    q[Math.ceil(mm/3)].push(m.dateId);
+  });
+
+  var h='<div class="body" style="padding:12px 16px;border-bottom:1px solid var(--line)">';
+  h+='<div class="row" style="margin:0"><div class="field"><label>Year</label>'+
+     '<select id="dYear">'+ys.map(function(y){
+        return '<option value="'+y+'"'+(y===year?' selected':'')+'>'+y+'</option>';}).join('')+
+     '</select></div>';
+  h+='<div class="small muted" style="align-self:flex-end;padding-bottom:6px">'+
+     'Quarterly averages of the forecast rate per order.</div></div></div>';
+
+  h+='<table><thead><tr><th>Brand</th><th>Location</th><th>Treatment</th>';
+  [1,2,3,4].forEach(function(n){
+    h+='<th class="right">Q'+n+' '+String(year).slice(2)+'</th>';
+  });
+  h+='<th class="right">Year avg</th><th class="right">Change</th></tr></thead><tbody>';
+
+  function avg(ids,map){
+    var v=ids.map(function(i){return map[i];}).filter(function(x){return x!==undefined;});
+    if(!v.length) return null;
+    return v.reduce(function(a,b){return a+b;},0)/v.length;
+  }
+
+  Object.keys(byHl).sort(function(a,b){return a-b;}).forEach(function(id){
+    var map=byHl[id];
+    var hl=S.hlIds.filter(function(x){return x.id===Number(id);})[0]||{};
+    var any=months.some(function(m){return map[m.dateId]!==undefined;});
+    if(!any) return;
+    var qv=[1,2,3,4].map(function(n){ return avg(q[n],map); });
+    var ya=avg([].concat(q[1],q[2],q[3],q[4]),map);
+    var q1=qv[0], q4=qv[3];
+    var ch=(q1&&q4)?((q4-q1)/q1*100):null;
+
+    h+='<tr class="click" data-hl="'+id+'">'+
+       '<td>'+esc(hl.brand||'')+'</td>'+
+       '<td>'+esc(hl.geo||'')+'</td>'+
+       '<td>'+esc(treatmentLabel(hl))+'</td>';
+    qv.forEach(function(v){
+      h+='<td class="right num">'+(v===null?'<span class="muted">—</span>':money(v))+'</td>';
+    });
+    h+='<td class="right num"><strong>'+(ya===null?'—':money(ya))+'</strong></td>';
+    h+='<td class="right num '+(ch===null?'muted':(ch>0.005?'up':(ch<-0.005?'down':'muted')))+'">'+
+       (ch===null?'—':((ch>0?'+':'')+ch.toFixed(1)+'%'))+'</td></tr>';
+  });
+  h+='</tbody></table>';
+  h+='<div class="small muted" style="padding:8px 12px">Change is Q4 against Q1 of '+year+
+     '. Click a row to open that segment on the Rates tab.</div>';
+  return h;
+}
+
+/* Full table: every month, nothing hidden. */
+function outputTable(){
+  if(!S.output.length) return '<div class="empty">Nothing published yet.</div>';
+  var months=S.calendar.filter(function(c){return c.inHorizon;})
+             .sort(function(a,b){return a.dateId-b.dateId;});
+  var byHl={};
+  S.output.forEach(function(r){ (byHl[r.hlId]=byHl[r.hlId]||{})[r.dateId]=r.rate; });
+
+  var h='<div class="body" style="padding:10px 16px;border-bottom:1px solid var(--line)">'+
+        '<div class="small muted" style="display:flex;gap:20px;flex-wrap:wrap;align-items:center">'+
+        '<span><span style="color:var(--brand-lo);font-weight:500">Blue heading</span>'+
+        ' = peak-surcharge month (Nov to Jan)</span>'+
+        '<span><span style="background:var(--brand-tint);padding:1px 8px;border-radius:3px">'+
+        'Shaded cell</span> = rate changed from the month before</span>'+
+        '</div></div>';
+  h+='<div style="overflow-x:auto"><table><thead><tr>'+
+        '<th style="position:sticky;left:0;background:var(--surface);z-index:1">High Level ID</th>';
+  months.forEach(function(m){
+    var peak = (m.label.indexOf('Dec-')===0 || m.label.indexOf('Jan-')===0 ||
+                m.label.indexOf('Nov-')===0);
+    h+='<th class="right"'+(peak?' style="color:var(--brand-lo)"':'')+'>'+esc(m.label)+'</th>';
+  });
+  h+='</tr></thead><tbody>';
+  Object.keys(byHl).sort(function(a,b){return a-b;}).forEach(function(id){
+    h+='<tr><td class="small" style="position:sticky;left:0;background:var(--surface)">'+
+       id+' — '+esc(hlName(Number(id)))+'</td>';
+    var prev=null;
+    months.forEach(function(m){
+      var v=byHl[id][m.dateId];
+      var moved = prev!==null && v!==undefined && Math.abs(v-prev)>0.000001;
+      h+='<td class="right num"'+(moved?' style="background:var(--brand-tint)"':'')+'>'+
+         (v===undefined?'—':money(v,4))+'</td>';
+      if(v!==undefined) prev=v;
+    });
+    h+='</tr>';
+  });
+  h+='</tbody></table></div>';
+  return h;
+}
+
+function viewOutput(){
+  if(!S.loaded) return '<div class="card"><div class="body">'+loading()+'</div></div>';
+  var h='<div class="card"><div class="body"><div class="row" style="margin:0">';
+  if(can('runCalc')) h+='<button class="btn" id="oPrev">Preview changes</button>';
+  if(can('publishOutput')) h+='<button class="btn primary" id="oPub">Publish</button>';
+  h+='<span class="small muted" style="margin-left:8px">Preview writes nothing.</span>';
+  h+='</div></div></div>';
+  h+='<div id="oResult"></div>';
+  h+='<div class="card"><h2>OUTPUT — forecast rate per order</h2><div class="body" style="padding:0">'+
+     outputTable()+'</div></div>';
+  return h;
+}
+function wireOutput(){
+  var p=document.getElementById('oPrev');
+  if(p) p.onclick=function(){
+    document.getElementById('oResult').innerHTML='<div class="card"><div class="body">'+loading()+'</div></div>';
+    call('previewOutput',[1],function(r){
+      var h='<div class="card"><h2>Preview — nothing written</h2><div class="body">';
+      if(!r.changes.length && !r.added){ h+='<div class="muted">Nothing would change.</div>'; }
+      else{
+        h+='<div class="small muted" style="margin-bottom:10px">'+r.changes.length+
+           ' row(s) would change, '+r.added+' new, '+r.unchanged+' unchanged.</div>';
+        h+='<table><thead><tr><th>High Level ID</th><th>Month</th><th class="right">Before</th>'+
+           '<th class="right">After</th><th class="right">Change</th></tr></thead><tbody>';
+        r.changes.slice(0,40).forEach(function(c){
+          h+='<tr><td class="small">'+c.hlId+'</td><td>'+esc(c.label)+'</td>'+
+             '<td class="right num">'+money(c.before)+'</td><td class="right num">'+money(c.after)+'</td>'+
+             '<td class="right num '+(c.diff>0?'up':'down')+'">'+(c.diff>0?'+':'')+money(c.diff)+
+             ' ('+c.pct.toFixed(2)+'%)</td></tr>';
+        });
+        h+='</tbody></table>';
+      }
+      h+='</div></div>';
+      document.getElementById('oResult').innerHTML=h;
+    });
+  };
+  var pb=document.getElementById('oPub');
+  if(pb) pb.onclick=function(){
+    if(!confirm('Publish the forecast? This overwrites OUTPUT and OUTPUT_Detail.')) return;
+    document.getElementById('oResult').innerHTML='<div class="card"><div class="body">'+loading()+'</div></div>';
+    call('publishOutput',[1],function(r){
+      if(r.blocked){
+        document.getElementById('oResult').innerHTML=
+          '<div class="card"><div class="body"><div class="err-box">Publish blocked — '+
+          r.validation.counts.ERROR+' validation error(s). Nothing was written.</div></div></div>';
+        return;
+      }
+      document.getElementById('oResult').innerHTML=
+        '<div class="card"><div class="body"><div class="ok-box">Published run '+r.calcRunId+
+        ' — '+r.rows+' rows.</div></div></div>';
+      reloadData();
+    });
+  };
+}
+
+/* ===================================================================
+   Admin — reference lists, carriers, methods, surcharges, structure
+   =================================================================== */
+function viewAdmin(){
+  if(!S.loaded) return '<div class="card"><div class="body">'+loading()+'</div></div>';
+  var sec=S.sel.adminSection||'carriers';
+  var tabs=[['carriers','Carriers & methods'],
+            ['structure','High Level & Modelling IDs'],
+            ['surcharges','Surcharge types'],
+            ['lists','Reference lists']];
+  var h='<div class="card"><div class="body" style="padding:10px 12px">';
+  h+='<div style="display:flex;gap:2px;flex-wrap:wrap">'+tabs.map(function(t){
+     return '<button class="btn sm'+(sec===t[0]?' primary':'')+'" data-as="'+t[0]+'">'+
+            t[1]+'</button>'; }).join('')+'</div></div></div>';
+  if(sec==='lists')      h+=viewAdminLists();
+  if(sec==='carriers')   h+=viewAdminCarriers();
+  if(sec==='surcharges') h+=viewAdminSurcharges();
+  if(sec==='structure')  h+=viewAdminStructure();
+  return h;
+}
+function wireAdmin(){
+  Array.prototype.forEach.call(document.querySelectorAll('[data-as]'),function(b){
+    b.onclick=function(){ S.sel.adminSection=b.getAttribute('data-as'); renderAll(); };
+  });
+  var sec=S.sel.adminSection||'carriers';
+  if(sec==='lists')      wireAdminLists();
+  if(sec==='carriers')   wireAdminCarriers();
+  if(sec==='surcharges') wireAdminSurcharges();
+  if(sec==='structure')  wireAdminStructure();
+}
+
+/* ---- reference lists: brand, geo, treatment type, WL split, currency ---- */
+var LIST_LABELS = {
+  BRAND:'Brand', GEO:'Geography', TREATMENT_TYPE:'Treatment type',
+  WL_SPLIT:'Weight-loss split', CURRENCY:'Currency',
+  LETTER_PARCEL:'Letter / parcel', TEMP_REGIME:'Temperature regime'
+};
+var LIST_LOCKED = { LETTER_PARCEL:1, TEMP_REGIME:1 };
+
+var refUsage=null;
+
+function viewAdminLists(){
+  var h='';
+  Object.keys(LIST_LABELS).forEach(function(name){
+    var vals=(S.ref[name]||[]);
+    var locked=LIST_LOCKED[name];
+    h+='<div class="card"><h2>'+esc(LIST_LABELS[name])+
+       '<span class="small muted" style="font-weight:400"> — '+name+'</span>'+
+       (locked?'<span class="pill" style="float:right">fixed</span>'
+              :'<button class="btn sm primary" data-addref="'+name+'" style="float:right;margin-top:-3px">Add</button>')+
+       '</h2><div class="body" style="padding:0">';
+    h+='<table><thead><tr><th style="width:200px">Code</th><th>Label</th>'+
+       '<th class="right" style="width:110px">Used by</th>'+
+       '<th style="width:150px"></th></tr></thead><tbody>';
+    if(!vals.length) h+='<tr><td colspan="4" class="empty">Nothing yet.</td></tr>';
+    vals.forEach(function(v){
+      var u = refUsage ? refUsage[name+'|'+v.code] : null;
+      var n = u ? u.total : null;
+      h+='<tr><td class="num">'+esc(v.code)+'</td><td>'+esc(v.label)+'</td>'+
+         '<td class="right num '+(n===0?'muted':'')+'">'+
+           (n===null?'<span class="muted">…</span>':(n||'—'))+'</td>'+
+         '<td class="right">';
+      if(!locked && u){
+        h+='<button class="btn sm" data-editref="'+u.id+'" data-l="'+name+'">Edit</button> ';
+        h+='<button class="btn sm danger" data-delref="'+u.id+'" '+
+           (n>0?'disabled title="In use — cannot be removed"':'')+'>Remove</button>';
+      }
+      h+='</td></tr>';
+    });
+    h+='</tbody></table></div></div>';
+  });
+  h+='<div class="card"><div class="body small muted">'+
+     '<strong style="color:var(--ink)">Labels can always be changed.</strong> A code can only '+
+     'be changed while nothing refers to it — once it is in use, renaming it would orphan every '+
+     'row pointing at it, so add a new one and move the rows across instead. Letter/parcel and '+
+     'temperature regime are fixed entirely, because the calculation branches on those names.'+
+     '</div></div>';
+  return h;
+}
+
+function wireAdminLists(){
+  if(!refUsage){
+    call('getReferenceUsage',[],function(u){ refUsage=u; renderAll(); },null,true);
+  }
+
+  Array.prototype.forEach.call(document.querySelectorAll('[data-addref]'),function(b){
+    b.onclick=function(){ editRef(null, b.getAttribute('data-addref')); };
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('[data-editref]'),function(b){
+    b.onclick=function(){ editRef(Number(b.getAttribute('data-editref')), b.getAttribute('data-l')); };
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('[data-delref]'),function(b){
+    if(b.disabled) return;
+    b.onclick=function(){
+      if(!confirm('Remove this value? It disappears from the dropdowns but stays in the '+
+                  'change log.')) return;
+      call('deleteReferenceValue',[Number(b.getAttribute('data-delref'))],function(res){
+        showOk('Removed '+res.code+'.'); refUsage=null; reloadInit();
+      });
+    };
+  });
+}
+
+function editRef(id, list){
+  var existing=null, usage=null;
+  if(id){
+    Object.keys(refUsage||{}).forEach(function(k){
+      if(refUsage[k].id===id){
+        usage=refUsage[k];
+        var parts=k.split('|');
+        list=parts[0];
+        existing=(S.ref[list]||[]).filter(function(v){return v.code===parts[1];})[0];
+      }
+    });
+  }
+  var inUse = usage && usage.total>0;
+  openForm({
+    title:(id?'Edit '+LIST_LABELS[list]:'Add to '+LIST_LABELS[list]),
+    intro: inUse
+      ? 'This code is used by '+usage.where.map(function(w){return w.count+' '+w.label;}).join(', ')+
+        ', so it cannot be renamed — every one of those rows points at it. The label is free to change.'
+      : 'The code becomes permanent once something refers to it. Nothing does yet, so it can '+
+        'still be corrected.',
+    saveLabel:(id?'Save':'Add'),
+    fields:[
+      {key:'code', label:'Code'+(inUse?' (locked — in use)':''), type:'text', required:true,
+       value: existing?existing.code:'', placeholder:'NL',
+       readonly: inUse,
+       hint: inUse ? 'Add a new code and move the rows across if this really needs to change.'
+                   : 'Letters, digits and underscores. Uppercase.'},
+      {key:'label', label:'Label', type:'text', required:true,
+       value: existing?existing.label:'', placeholder:'Netherlands',
+       hint:'What people see in the dropdowns.'},
+      {key:'sortOrder', label:'Position in the list', type:'number', step:'10', min:0,
+       value: existing?existing.sort:'',
+       hint:'Lower appears first. Leave blank to add at the end.'}
+    ],
+    onSave:function(v, done, fail){
+      call('saveReferenceValue',[{ id:id||0, listName:list,
+        code: inUse ? existing.code : v.code,
+        label:v.label, sortOrder:Number(v.sortOrder||0) }],
+        function(res){ done();
+          showOk((res.isNew?'Added ':'Updated ')+res.code+'.');
+          refUsage=null; reloadInit(); }, fail);
+    }
+  });
+}
+
+/* ---- carriers and methods ---- *//* ---- carriers and methods ---- */
+function viewAdminCarriers(){
+  var h='<div class="card"><div class="body small muted">'+
+     '<strong style="color:var(--ink)">Adding a courier, in order:</strong> '+
+     '1. add the carrier here &nbsp;2. add its methods &nbsp;'+
+     '3. add routes under High Level &amp; Modelling IDs &nbsp;'+
+     '4. set base rates and surcharges on the Rates tab &nbsp;'+
+     '5. redistribute the mix on the Mixes tab so it still totals 100%'+
+     '</div></div>';
+  h+='<div class="card"><h2>Carriers'+
+     '<button class="btn sm primary" id="addCarrier" style="float:right;margin-top:-3px">Add carrier</button>'+
+     '</h2><div class="body" style="padding:0">';
+  h+='<table><thead><tr><th>Code</th><th>Name</th><th>Currency</th>'+
+     '<th class="right">Methods</th><th class="right">Routes</th></tr></thead><tbody>';
+  S.carriers.forEach(function(cr){
+    var nm=S.methods.filter(function(m){return m.carrier===cr.code;}).length;
+    var nr=S.mdIds.filter(function(m){return m.carrier===cr.code;}).length;
+    h+='<tr><td class="num">'+esc(cr.code)+'</td><td>'+esc(cr.name)+'</td>'+
+       '<td class="muted">'+esc(cr.currency)+'</td>'+
+       '<td class="right num">'+nm+'</td><td class="right num">'+nr+'</td></tr>';
+  });
+  h+='</tbody></table></div></div>';
+
+  h+='<div class="card"><h2>Methods'+
+     '<button class="btn sm primary" id="addMethod" style="float:right;margin-top:-3px">Add method</button>'+
+     '</h2><div class="body" style="padding:0">';
+  h+='<table><thead><tr><th>Code</th><th>Carrier</th><th>Name</th>'+
+     '<th class="right">Routes</th></tr></thead><tbody>';
+  S.methods.forEach(function(m){
+    var nr=S.mdIds.filter(function(x){return x.method===m.code;}).length;
+    h+='<tr><td class="num">'+esc(m.code)+'</td><td>'+esc(m.carrier)+'</td>'+
+       '<td>'+esc(m.name)+'</td><td class="right num">'+(nr||'—')+'</td></tr>';
+  });
+  h+='</tbody></table>';
+  h+='<div class="small muted" style="padding:8px 12px">A method belongs to exactly one '+
+     'carrier. If a route is filed under a different one, validation flags it as '+
+     'METHOD_CARRIER rather than silently changing your data.</div>';
+  h+='</div></div>';
+  return h;
+}
+function wireAdminCarriers(){
+  var a=document.getElementById('addCarrier');
+  if(a) a.onclick=function(){
+    openForm({
+      title:'Add a carrier',
+      intro:'Step 1 of adding a courier. Its services come next, as methods.',
+      fields:[
+        {key:'code', label:'Code', type:'text', required:true, placeholder:'UPS',
+         hint:'Uppercase, no spaces. Permanent once routes refer to it.'},
+        {key:'name', label:'Name', type:'text', required:true, placeholder:'UPS'},
+        {key:'currency', label:'Default currency', type:'select', required:true,
+         value:'GBP', options:optsRef('CURRENCY')}
+      ],
+      onSave:function(v, done, fail){
+        call('saveCarrier',[{code:v.code, name:v.name, currency:v.currency}],
+          function(res){ done(); showOk('Carrier '+res.code+' saved.'); reloadInit(); }, fail);
+      }
+    });
+  };
+  var b=document.getElementById('addMethod');
+  if(b) b.onclick=function(){
+    openForm({
+      title:'Add a method',
+      intro:'A method belongs to exactly one carrier. Letterbox services are separate '+
+            'methods from their parcel equivalents.',
+      fields:[
+        {key:'code', label:'Code', type:'text', required:true, placeholder:'UPSGROUND'},
+        {key:'carrier', label:'Carrier', type:'select', required:true,
+         options:S.carriers.map(function(c){return {value:c.code, label:c.name+' ('+c.code+')'};})},
+        {key:'name', label:'Name', type:'text', required:true, placeholder:'UPS Ground'}
+      ],
+      onSave:function(v, done, fail){
+        call('saveMethod',[{code:v.code, carrier:v.carrier, name:v.name}],
+          function(res){ done(); showOk('Method '+res.code+' saved.'); reloadInit(); }, fail);
+      }
+    });
+  };
+}
+
+/* ---- surcharge types ---- */
+function viewAdminSurcharges(){
+  var h='<div class="card"><h2>Surcharge types'+
+     '<button class="btn sm primary" id="addSurType" style="float:right;margin-top:-3px">Add type</button>'+
+     '</h2><div class="body" style="padding:0">';
+  h+='<table><thead><tr><th>Code</th><th>Name</th><th>Value</th><th>Applies to</th>'+
+     '<th class="right">Order</th><th>Proration</th><th class="right">In use</th></tr></thead><tbody>';
+  S.surchargeTypes.forEach(function(s){
+    var n=S.rateSurcharge.filter(function(r){return r.code===s.code;}).length;
+    h+='<tr><td class="num">'+esc(s.code)+'</td><td>'+esc(s.name)+'</td>'+
+       '<td>'+(s.valueType==='PCT'?'percentage of base':'fixed amount')+'</td>'+
+       '<td class="muted">'+esc(s.appliesTo)+'</td>'+
+       '<td class="right num">'+s.applyOrder+'</td>'+
+       '<td class="muted small">'+esc(s.proration)+'</td>'+
+       '<td class="right num">'+(n||'—')+'</td></tr>';
+  });
+  h+='</tbody></table>';
+  h+='<div class="small muted" style="padding:8px 12px">'+
+     '<strong>DAY_WEIGHTED</strong> means a change part-way through a month gives a blended '+
+     'figure for that month. <strong>POINT_IN_TIME</strong> means whatever is in force on the '+
+     '1st applies to the whole month. Add a type here and the calculation picks it up with no '+
+     'code change.</div>';
+  h+='</div></div>';
+  return h;
+}
+function wireAdminSurcharges(){
+  var b=document.getElementById('addSurType');
+  if(b) b.onclick=function(){
+    openForm({
+      title:'Add a surcharge type',
+      intro:'The calculation picks this up with no code change. Existing types are '+
+            'fuel, green, peak and ShipStation.',
+      fields:[
+        {key:'code', label:'Code', type:'text', required:true, placeholder:'REMOTE'},
+        {key:'name', label:'Name', type:'text', required:true, placeholder:'Remote area'},
+        {key:'valueType', label:'How it is expressed', type:'select', required:true,
+         value:'AMT', options:[
+           {value:'AMT', label:'Fixed amount added to the rate'},
+           {value:'PCT', label:'Percentage of the base rate'}]},
+        {key:'proration', label:'Mid-month changes', type:'select', required:true,
+         value:'DAY_WEIGHTED', options:[
+           {value:'DAY_WEIGHTED', label:'Day-weighted — blend the month'},
+           {value:'POINT_IN_TIME', label:'Point in time — whatever applies on the 1st'}],
+         hint:'Day-weighted matches how fuel and peak already behave.'},
+        {key:'applyOrder', label:'Order applied', type:'number', min:1, step:'1', value:1}
+      ],
+      onSave:function(v, done, fail){
+        call('saveSurchargeType',[{code:v.code, name:v.name, valueType:v.valueType,
+          proration:v.proration, applyOrder:Number(v.applyOrder||1)}],
+          function(res){ done(); showOk('Surcharge type '+res.code+' saved.'); reloadInit(); }, fail);
+      }
+    });
+  };
+}
+
+/* ---- High Level IDs and Modelling IDs ---- */
+function viewAdminStructure(){
+  var h='<div class="card"><h2>High Level IDs'+
+     '<button class="btn sm primary" id="addHl" style="float:right;margin-top:-3px">Add</button>'+
+     '</h2><div class="body" style="padding:0">';
+  h+='<table><thead><tr><th class="right" style="width:50px">ID</th><th>Brand</th><th>Geo</th>'+
+     '<th>Treatment</th><th>Split</th><th>Currency</th><th class="right">Routes</th>'+
+     '<th></th></tr></thead><tbody>';
+  S.hlIds.forEach(function(x){
+    var nr=S.mdIds.filter(function(m){return m.hlId===x.id;}).length;
+    h+='<tr'+(x.active?'':' style="opacity:.5"')+'><td class="right num">'+x.id+'</td>'+
+       '<td>'+esc(x.brand)+'</td><td>'+esc(x.geo)+'</td>'+
+       '<td>'+esc(x.treatmentType)+'</td><td>'+esc(x.wlSplit)+'</td>'+
+       '<td class="muted">'+esc(x.currency)+'</td><td class="right num">'+nr+'</td>'+
+       '<td class="right">'+(x.canEdit!==false?
+         '<button class="btn sm" data-ehl="'+x.id+'">Edit</button>':'')+'</td></tr>';
+  });
+  h+='</tbody></table></div></div>';
+
+  h+='<div class="card"><h2>Modelling IDs'+
+     '<button class="btn sm" id="copyData" style="float:right;margin-top:-3px;margin-left:6px">Copy rates &amp; mixes</button>'+
+     '<button class="btn sm" id="cloneMd" style="float:right;margin-top:-3px;margin-left:6px">Clone routes</button>'+
+     '<button class="btn sm primary" id="addMd" style="float:right;margin-top:-3px">Add</button>'+
+     '</h2><div class="body">';
+  h+='<div class="field" style="max-width:340px;margin-bottom:12px"><label>Show routes for</label>'+
+     '<select id="sHl">'+S.hlIds.map(function(x){
+        return '<option value="'+x.id+'"'+(x.id===S.sel.hlId?' selected':'')+'>'+
+               x.id+' — '+esc(hlName(x.id))+'</option>';}).join('')+'</select></div>';
+  h+='</div><div class="body" style="padding:0">';
+  h+='<table><thead><tr><th class="right" style="width:50px">ID</th><th>Carrier</th>'+
+     '<th>Method</th><th>Class</th><th class="right">Rates</th><th class="right">Mix rows</th>'+
+     '<th></th></tr></thead><tbody>';
+  var routes=S.mdIds.filter(function(m){return m.hlId===S.sel.hlId;});
+  if(!routes.length) h+='<tr><td colspan="7" class="empty">No routes yet.</td></tr>';
+  routes.forEach(function(m){
+    var nrate=S.rateBase.filter(function(r){return r.modellingId===m.id;}).length;
+    var nmix=S.mixMethod.filter(function(r){return r.modellingId===m.id;}).length;
+    h+='<tr'+(m.active?'':' style="opacity:.5"')+'><td class="right num">'+m.id+'</td>'+
+       '<td>'+esc(m.carrier)+'</td><td>'+esc(m.method)+'</td><td>'+esc(m.letterParcel)+'</td>'+
+       '<td class="right num'+(nrate?'':' up')+'">'+(nrate||'none')+'</td>'+
+       '<td class="right num muted">'+(nmix||'—')+'</td>'+
+       '<td class="right">'+(m.canEdit!==false?
+         '<button class="btn sm danger" data-dmd="'+m.id+'">Deactivate</button>':'')+'</td></tr>';
+  });
+  h+='</tbody></table>';
+  h+='<div class="small muted" style="padding:8px 12px">A route with no rates prices at zero — '+
+     'validation reports that as RATE_MISSING. After adding routes, set their rates and '+
+     'redistribute the mix so it still totals 100%.</div>';
+  h+='</div></div>';
+  return h;
+}
+function wireAdminStructure(){
+  var sel=document.getElementById('sHl');
+  if(sel) sel.onchange=function(){ S.sel.hlId=Number(sel.value); renderAll(); };
+
+  var a=document.getElementById('addHl');
+  if(a) a.onclick=function(){ editHl(null); };
+  Array.prototype.forEach.call(document.querySelectorAll('[data-ehl]'),function(b){
+    b.onclick=function(){ editHl(Number(b.getAttribute('data-ehl'))); };});
+
+  var m=document.getElementById('addMd');
+  if(m) m.onclick=function(){
+    openForm({
+      title:'Add a route',
+      intro:'To '+esc(hlName(S.sel.hlId))+'. The carrier comes from the method, so the two '+
+            'cannot disagree.',
+      saveLabel:'Add route',
+      fields:[
+        {key:'method', label:'Method', type:'select', required:true,
+         options:S.methods.map(function(mm){
+           return {value:mm.code, label:mm.carrier+' / '+mm.name}; }),
+         hint:'Not listed? Add the carrier and method under Carriers &amp; methods first.'},
+        {key:'letterParcel', label:'Sent as', type:'select', required:true, value:'PARCEL',
+         options:[{value:'PARCEL',label:'Parcel'},{value:'LETTER',label:'Letterbox'}]}
+      ],
+      onSave:function(v, done, fail){
+        var mm=S.methods.filter(function(x){return x.code===v.method;})[0];
+        if(!mm) return fail('That method is not recognised.');
+        call('saveModellingId',[{hlId:S.sel.hlId, carrier:mm.carrier,
+          method:v.method, letterParcel:v.letterParcel}],
+          function(res){ done();
+            showOk('Route '+res.id+' added. It has no rate yet, so it prices at zero until '+
+                   'you set one on the Rates tab.'+(res.warning?' '+res.warning:''));
+            reloadInit(); }, fail);
+      }
+    });
+  };
+
+  var cl=document.getElementById('cloneMd');
+  if(cl) cl.onclick=function(){
+    openForm({
+      title:'Copy routes from another segment',
+      intro:'Into '+esc(hlName(S.sel.hlId))+'. Routes only — rates and mixes are not copied, '+
+            'because a new geography rarely has the same negotiated rates and a copied rate '+
+            'nobody notices is worse than a missing one the checks shout about.',
+      saveLabel:'Copy routes',
+      fields:[
+        {key:'fromHl', label:'Copy from', type:'select', required:true,
+         options:S.hlIds.filter(function(h){return h.id!==S.sel.hlId;}).map(function(h){
+           var n=S.mdIds.filter(function(m){return m.hlId===h.id;}).length;
+           return {value:h.id, label:h.id+' — '+hlName(h.id)+'  ('+n+' routes)'}; })}
+      ],
+      onSave:function(v, done, fail){
+        call('cloneModellingIds',[Number(v.fromHl), S.sel.hlId],
+          function(res){ done();
+            showOk('Created '+res.created+' route(s), skipped '+res.skipped+
+                   ' already there. '+res.note);
+            reloadInit(); }, fail);
+      }
+    });
+  };
+
+  var cp=document.getElementById('copyData');
+  if(cp) cp.onclick=function(){ copySegmentForm(); };
+
+  Array.prototype.forEach.call(document.querySelectorAll('[data-dmd]'),function(b){
+    b.onclick=function(){
+      if(!confirm('Deactivate this route? It is refused if the route still carries volume.')) return;
+      call('deleteModellingId',[Number(b.getAttribute('data-dmd'))],function(){
+        showOk('Route deactivated.'); reloadInit(); });
+    };});
+}
+/* Copy rates and mixes between segments. Previews first, always. */
+function copySegmentForm(){
+  openForm({
+    title:'Copy rates and mixes',
+    intro:'Into '+esc(hlName(S.sel.hlId))+'. Routes are paired on carrier, method and class, '+
+          'so both segments need the same ones — use Clone routes first if they do not.',
+    saveLabel:'Preview',
+    fields:[
+      {key:'fromHl', label:'Copy from', type:'select', required:true,
+       options:S.hlIds.filter(function(h){return h.id!==S.sel.hlId;}).map(function(h){
+         var n=S.mdIds.filter(function(m){return m.hlId===h.id;}).length;
+         return {value:h.id, label:hlName(h.id)+'  ('+n+' routes)'}; })},
+      {key:'what', label:'What to copy', type:'select', required:true, value:'ALL',
+       options:[{value:'ALL', label:'Rates, surcharges and mixes'},
+                {value:'RATES', label:'Rates and surcharges only'},
+                {value:'MIXES', label:'Mixes only'}]},
+      {key:'replace', label:'If the target already has data', type:'select', required:true,
+       value:'SKIP',
+       options:[{value:'SKIP', label:'Leave it alone — copy only what is missing'},
+                {value:'ADD',  label:'Copy anyway, alongside what is there'}],
+       hint:'Copying alongside existing periods will overlap them, which the checks flag as an error.'}
+    ],
+    onSave:function(v, done, fail){
+      var opts={ fromHlId:Number(v.fromHl), toHlId:S.sel.hlId,
+        rates: v.what!=='MIXES', surcharges: v.what!=='MIXES',
+        mixes: v.what!=='RATES', letterParcel: v.what!=='RATES',
+        replace: v.replace==='ADD', preview:true };
+      call('copySegmentData',[opts],function(r){ done(); showCopyPreview(r, opts); }, fail);
+    }
+  });
+}
+
+function showCopyPreview(r, opts){
+  var rows=[['Base rates', r.counts.rateBase, r.skipped.rateBase],
+            ['Surcharges', r.counts.rateSurcharge, r.skipped.rateSurcharge],
+            ['Method mixes', r.counts.mixMethod, r.skipped.mixMethod],
+            ['Letter/parcel split', r.counts.mixLetterParcel, r.skipped.mixLP]];
+  var intro='<strong>'+r.matchedRoutes+' route(s) paired up.</strong><br>';
+  var tbl='<table style="margin-top:10px;font-size:13px"><tr>'+
+          '<th style="text-align:left">What</th><th class="right">To copy</th>'+
+          '<th class="right">Skipped</th></tr>';
+  rows.forEach(function(x){
+    tbl+='<tr><td>'+x[0]+'</td><td class="right num">'+x[1]+'</td>'+
+         '<td class="right num muted">'+(x[2]||'—')+'</td></tr>';
+  });
+  tbl+='</table>';
+
+  var warn='';
+  if(r.missingInTarget.length){
+    warn+='<div style="margin-top:10px;color:var(--warn)"><strong>'+r.missingInTarget.length+
+          ' route(s) have no partner here:</strong><br>'+
+          esc(r.missingInTarget.slice(0,6).join(', '))+
+          (r.missingInTarget.length>6?' and '+(r.missingInTarget.length-6)+' more':'')+'</div>';
+  }
+  if(r.extraInTarget.length){
+    warn+='<div style="margin-top:8px;color:var(--ink-3)">'+r.extraInTarget.length+
+          ' route(s) here have no equivalent in the source, so they get nothing: '+
+          esc(r.extraInTarget.slice(0,4).join(', '))+'</div>';
+  }
+  if(r.mixWarning){
+    warn+='<div style="margin-top:10px;color:var(--err)"><strong>'+esc(r.mixWarning)+'</strong></div>';
+  }
+  if(!r.total){
+    warn+='<div style="margin-top:10px">Nothing would be copied. Everything is either already '+
+          'there, or no routes pair up.</div>';
+  }
+
+  openForm({
+    title:'Copy '+r.total+' row(s)?',
+    intro: intro+tbl+warn+
+      '<div style="margin-top:10px;color:var(--ink-3)">Every row created is marked '+
+      '"Copied from High Level ID '+opts.fromHlId+'" in its notes, so a rate that was never '+
+      'actually negotiated can be found later.</div>',
+    saveLabel: r.total ? ('Copy '+r.total+' rows') : 'Nothing to copy',
+    fields:[],
+    onSave:function(v, done, fail){
+      if(!r.total){ done(); return; }
+      opts.preview=false;
+      call('copySegmentData',[opts],function(res){
+        done();
+        showOk('Copied '+res.written+' row(s). Check the mix totals 100%, then publish.');
+        reloadData();
+      }, fail);
+    }
+  });
+}
+
+function editHl(id){
+  var x = id ? S.hlIds.filter(function(y){return y.id===id;})[0] : null;
+  openForm({
+    title:(id?'Edit High Level ID '+id:'Add a High Level ID'),
+    intro:'A High Level ID is one business segment. Anything not in these lists has to be '+
+          'added under Reference lists first.',
+    saveLabel:(id?'Save':'Create'),
+    fields:[
+      {key:'brand', label:'Brand', type:'select', required:true,
+       value:x?x.brand:'', options:optsRef('BRAND')},
+      {key:'geo', label:'Location', type:'select', required:true,
+       value:x?x.geo:'', options:optsRef('GEO')},
+      {key:'treatmentType', label:'Treatment type', type:'select', required:true,
+       value:x?x.treatmentType:'', options:optsRef('TREATMENT_TYPE')},
+      {key:'wlSplit', label:'Split', type:'select', required:true,
+       value:x?x.wlSplit:'*', options:optsRef('WL_SPLIT'),
+       hint:'Use * where it does not apply, as on Core Rx.'},
+      {key:'currency', label:'Currency of its rate cards', type:'select', required:true,
+       value:x?x.currency:'GBP', options:optsRef('CURRENCY'),
+       hint:'A label only — no conversion is applied.'}
+    ],
+    onSave:function(v, done, fail){
+      call('saveHighLevelId',[{id:id||0, brand:v.brand, geo:v.geo,
+        treatmentType:v.treatmentType, wlSplit:v.wlSplit, currency:v.currency}],
+        function(res){ done();
+          showOk((res.isNew?'Created':'Updated')+' High Level ID '+res.id+' ('+res.code+').'+
+                 (res.isNew?' Now add its routes, rates and mixes.':''));
+          reloadInit(); }, fail);
+    }
+  });
+}
+
+/* Reload the structural payload as well as the data — new dimensions and IDs
+   arrive through initApp, not loadAllAppData. */
+function reloadInit(){
+  call('initApp',[],function(init){
+    S.ref=init.reference; S.carriers=init.carriers; S.methods=init.methods;
+    S.surchargeTypes=init.surchargeTypes; S.hlIds=init.highLevelIds;
+    S.mdIds=init.modellingIds; S.scenarios=init.scenarios; S.status=init.status;
+    reloadData();
+  },null,true);
+}
+
+/* ===================================================================
+   Actuals — what postage really cost, against what the model said
+   =================================================================== */
+var cmp=null;
+
+function viewActuals(){
+  if(!S.loaded) return '<div class="card"><div class="body">'+loading()+'</div></div>';
+  var h='<div class="card"><div class="body"><div class="row" style="margin:0">';
+  if(can('write')) h+='<button class="btn primary" id="aAdd">Add or update a month</button>';
+  h+='<span class="small muted" style="align-self:center">Blended rate is derived as '+
+     'spend divided by orders where both are given.</span>';
+  h+='</div></div></div><div id="aHost">'+loading()+'</div>';
+  return h;
+}
+
+function wireActuals(){
+  var a=document.getElementById('aAdd');
+  if(a) a.onclick=function(){ editActual(null); };
+  loadComparison();
+}
+
+function loadComparison(){
+  var host=document.getElementById('aHost'); if(!host) return;
+  call('getActualsComparison',[1],function(r){ cmp=r; renderComparison(); },
+    function(m){ host.innerHTML='<div class="card"><div class="empty">'+esc(m)+'</div></div>'; },true);
+}
+
+function renderComparison(){
+  var host=document.getElementById('aHost'); if(!host||!cmp) return;
+  var s=cmp.summary, h='';
+
+  if(!cmp.rows.length){
+    h+='<div class="card"><div class="empty">No actuals recorded yet.<br><br>'+
+       '<span class="small">Add a month above, or import from Metabase once the '+
+       'connection is proven — see the note at the bottom of this screen.</span></div></div>';
+  } else {
+    h+='<div class="grid2">';
+    h+='<div class="card"><h2>Against forecast</h2><div class="body">';
+    h+='<div style="display:flex;gap:26px;flex-wrap:wrap">';
+    h+='<div><div class="small muted">Months compared</div>'+
+       '<div style="font-size:22px" class="num">'+s.matched+'</div></div>';
+    h+='<div><div class="small muted">Mean forecast</div>'+
+       '<div style="font-size:22px" class="num">'+(s.meanForecast===null?'—':money(s.meanForecast))+'</div></div>';
+    h+='<div><div class="small muted">Mean actual</div>'+
+       '<div style="font-size:22px" class="num">'+(s.meanActual===null?'—':money(s.meanActual))+'</div></div>';
+    h+='<div><div class="small muted">Variance</div>'+
+       '<div style="font-size:22px" class="num '+
+       (s.meanVariancePct===null?'muted':(s.meanVariancePct>0?'up':'down'))+'">'+
+       (s.meanVariancePct===null?'—':((s.meanVariancePct>0?'+':'')+(s.meanVariancePct*100).toFixed(1)+'%'))+
+       '</div></div>';
+    h+='</div>';
+    h+='<div class="small muted" style="margin-top:12px">A positive variance means postage '+
+       'cost more than the model predicted. '+s.withinTolerance+' of '+s.matched+
+       ' months are within the '+(s.tolerancePct*100).toFixed(0)+'% tolerance set in Config.</div>';
+    h+='</div></div>';
+
+    h+='<div class="card"><h2>Volume-weighted</h2><div class="body">';
+    if(s.weightedActual===null){
+      h+='<div class="muted small">No order counts recorded, so only the simple mean is '+
+         'available. Enter orders and total spend rather than a rate and the weighted '+
+         'figure becomes possible — which is the one that matters for a budget, since a '+
+         'heavy month should count for more than a light one.</div>';
+    } else {
+      h+='<div style="display:flex;gap:26px;flex-wrap:wrap">';
+      h+='<div><div class="small muted">Weighted actual rate</div>'+
+         '<div style="font-size:22px" class="num">'+money(s.weightedActual)+'</div></div>';
+      h+='<div><div class="small muted">Orders</div>'+
+         '<div style="font-size:22px" class="num">'+Math.round(s.totalOrders).toLocaleString()+'</div></div>';
+      h+='</div>';
+      h+='<div class="small muted" style="margin-top:12px">Total spend divided by total '+
+         'orders across every month recorded.</div>';
+    }
+    h+='</div></div></div>';
+
+    h+='<div class="card"><h2>Month by month</h2><div class="body" style="padding:0">';
+    h+='<table><thead><tr><th>Brand</th><th>Location</th><th>Treatment</th><th>Month</th>'+
+       '<th class="right">Forecast</th><th class="right">Actual</th>'+
+       '<th class="right">Variance</th><th class="right">Orders</th>'+
+       '<th>Source</th><th></th></tr></thead><tbody>';
+    cmp.rows.forEach(function(r){
+      var hl=S.hlIds.filter(function(x){return x.id===r.hlId;})[0]||{};
+      var over=r.flag==='OVER_TOLERANCE', none=r.flag==='NO_FORECAST';
+      h+='<tr'+(over?' style="background:#FFF9EC"':'')+'>'+
+         '<td class="small">'+esc(hl.brand||'')+'</td>'+
+         '<td class="small">'+esc(hl.geo||'')+'</td>'+
+         '<td class="small">'+esc(treatmentLabel(hl))+'</td>'+
+         '<td class="num">'+esc(r.month)+'</td>'+
+         '<td class="right num">'+(r.forecast===null?
+            '<span class="sev WARN">no forecast</span>':money(r.forecast))+'</td>'+
+         '<td class="right num"><strong>'+money(r.actual)+'</strong></td>'+
+         '<td class="right num '+(r.variance===null?'muted':(r.variance>0?'up':'down'))+'">'+
+            (r.variance===null?'—':((r.variance>0?'+':'')+money(r.variance)+
+            ' ('+(r.variancePct>0?'+':'')+(r.variancePct*100).toFixed(1)+'%)'))+'</td>'+
+         '<td class="right num muted">'+(r.orders?Math.round(r.orders).toLocaleString():'—')+'</td>'+
+         '<td class="small muted">'+esc(r.source)+'</td>'+
+         '<td class="right">'+(cmp.canEdit?
+            '<button class="btn sm" data-ea="'+r.id+'">Edit</button> '+
+            '<button class="btn sm danger" data-da="'+r.id+'">Delete</button>':'')+'</td></tr>';
+    });
+    h+='</tbody></table>';
+    h+='<div class="small muted" style="padding:8px 12px">Shaded rows are outside the '+
+       'tolerance. "No forecast" means an actual exists for a month the model has not '+
+       'published — check the month is inside the horizon and the forecast has been run.</div>';
+    h+='</div></div>';
+  }
+
+  h+='<div class="card"><h2>Automatic feed from Metabase</h2><div class="body small muted">'+
+     '<p style="margin-top:0">Not connected yet, on purpose. Two things have to be true first, '+
+     'and neither can be assumed:</p>'+
+     '<p><strong style="color:var(--ink)">1. Google has to be able to reach Metabase.</strong> '+
+     'Apps Script runs on Google servers, not inside your network. If Metabase is VPN-only or '+
+     'IP-allowlisted it cannot be reached, and no code fixes that. Run '+
+     '<code>testMetabaseConnection</code> from the editor to find out in about three seconds.</p>'+
+     '<p><strong style="color:var(--ink)">2. The grain has to line up.</strong> The forecast is '+
+     'a rate per order at brand, location, treatment and split. Metabase will return whatever '+
+     'shape the warehouse uses. Run <code>previewMetabaseCard</code> to see the columns, send '+
+     'them over, and the mapping can be written.</p>'+
+     '<p style="margin-bottom:0">Until then, entering months by hand works and gives you the '+
+     'same comparison.</p>'+
+     '</div></div>';
+
+  host.innerHTML=h;
+
+  Array.prototype.forEach.call(document.querySelectorAll('[data-ea]'),function(b){
+    b.onclick=function(){ editActual(Number(b.getAttribute('data-ea'))); };});
+  Array.prototype.forEach.call(document.querySelectorAll('[data-da]'),function(b){
+    b.onclick=function(){
+      if(!confirm('Delete this actual?')) return;
+      call('deleteActual',[Number(b.getAttribute('data-da'))],function(){
+        showOk('Deleted.'); loadComparison(); reloadData(); });
+    };});
+}
+
+function editActual(id){
+  var r = id ? (cmp && cmp.rows.filter(function(x){return x.id===id;})[0]) : null;
+  openForm({
+    title:(id?'Edit actuals':'Add or update a month of actuals'),
+    intro:'Enter orders and total spend and the blended rate is worked out as spend divided '+
+          'by orders, so the three cannot drift apart. A rate on its own is accepted, but '+
+          'then the volume-weighted comparison is not available.',
+    fields:[
+      {key:'hlId', label:'Segment', type:'select', required:true,
+       value:r?r.hlId:(S.sel.hlId||''), options:optsHl()},
+      {key:'monthStart', label:'Month', type:'date', required:true,
+       value:r?r.monthStart:'', hint:'Use the 1st of the month.'},
+      {key:'orders', label:'Orders', type:'number', min:0, step:'1',
+       value:r&&r.orders?r.orders:'', placeholder:'12500'},
+      {key:'totalSpend', label:'Total postage spend', type:'number', min:0, step:'0.01',
+       value:r&&r.totalSpend?r.totalSpend:'', placeholder:'38500.00'},
+      {key:'blendedRate', label:'Or the blended rate directly', type:'number', min:0, step:'0.0001',
+       value:'', placeholder:'3.0800',
+       hint:'Only needed if you do not have orders and spend.'}
+    ],
+    onSave:function(v, done, fail){
+      if(!Number(v.orders) && !Number(v.blendedRate)){
+        return fail('Enter either orders and total spend, or a blended rate.');
+      }
+      call('saveActual',[{ id:id||0, hlId:Number(v.hlId), monthStart:v.monthStart,
+        orders:Number(v.orders||0), totalSpend:Number(v.totalSpend||0),
+        blendedRate:Number(v.blendedRate||0) }],
+        function(res){ done();
+          showOk('Saved — blended rate '+money(res.blendedRate)+
+                 (res.derived?' (spend divided by orders)':' (as entered)')+'.');
+          loadComparison(); reloadData(); }, fail);
+    }
+  });
+}
+
+/* ===================================================================
+   History — forecast snapshots, and the change log
+   =================================================================== */
+var snapDiff=null;
+
+function viewHistory(){
+  if(!S.loaded) return '<div class="card"><div class="body">'+loading()+'</div></div>';
+  var sec=S.sel.histSection||'snapshots';
+  var tabs=[['snapshots','Forecast over time'],['audit','Change log']];
+  var h='<div class="card"><div class="body" style="padding:10px 12px">';
+  h+='<div style="display:flex;gap:2px">'+tabs.map(function(t){
+     return '<button class="btn sm'+(sec===t[0]?' primary':'')+'" data-hs="'+t[0]+'">'+
+            t[1]+'</button>'; }).join('')+'</div></div></div>';
+  if(sec==='snapshots') h+=viewSnapshots();
+  if(sec==='audit')     h+=viewAuditLog();
+  return h;
+}
+function wireHistory(){
+  Array.prototype.forEach.call(document.querySelectorAll('[data-hs]'),function(b){
+    b.onclick=function(){ S.sel.histSection=b.getAttribute('data-hs'); renderAll(); };
+  });
+  if((S.sel.histSection||'snapshots')==='snapshots') wireSnapshots();
+}
+
+/* ---- forecast snapshots ---- */
+function viewSnapshots(){
+  var h='<div class="card"><div class="body"><div class="row" style="margin:0">';
+  if(can('runCalc')) h+='<button class="btn primary" id="snapNow">Take a snapshot now</button>';
+  h+='<span class="small muted" style="align-self:center">A snapshot is taken automatically '+
+     'each Monday, but only stored when the forecast has actually moved.</span>';
+  h+='</div></div></div>';
+
+  h+='<div class="card"><h2>Snapshots</h2><div class="body" style="padding:0">';
+  if(!S.snapshots.length){
+    h+='<div class="empty">None yet.<br><br><span class="small">Take one above to start the '+
+       'record, and ask whoever set the portal up to run <code>installWeeklySnapshot</code> '+
+       'once so it happens on its own.</span></div>';
+  } else {
+    h+='<table><thead><tr><th class="right" style="width:50px">ID</th><th>Taken</th>'+
+       '<th>By</th><th>How</th><th>Label</th><th class="right">Rows changed</th>'+
+       '<th></th></tr></thead><tbody>';
+    S.snapshots.forEach(function(s,i){
+      h+='<tr><td class="right num">'+s.id+'</td><td class="num small">'+esc(s.ts)+'</td>'+
+         '<td class="small muted">'+esc(s.by)+'</td>'+
+         '<td class="small">'+(s.trigger==='WEEKLY'?'<span class="pill">weekly</span>':'manual')+'</td>'+
+         '<td class="small">'+esc(s.label)+'</td>'+
+         '<td class="right num">'+(s.changed||'—')+'</td>'+
+         '<td class="right"><button class="btn sm" data-snap="'+s.id+'">'+
+         (i===0?'Compare with now':'Compare with next')+'</button></td></tr>';
+    });
+    h+='</tbody></table>';
+    h+='<div class="small muted" style="padding:8px 12px">Gaps in the dates are the point: a '+
+       'week with no entry is a week the forecast did not move. "Rows changed" counts how many '+
+       'of the 612 segment-months differed from the snapshot before it.</div>';
+  }
+  h+='</div></div>';
+  h+='<div id="snapHost"></div>';
+  return h;
+}
+
+function wireSnapshots(){
+  var b=document.getElementById('snapNow');
+  if(b) b.onclick=function(){
+    openForm({
+      title:'Take a snapshot',
+      intro:'Records what the forecast says right now, so a later change can be traced back. '+
+            'Nothing is stored if the numbers have not moved since the last one.',
+      saveLabel:'Take snapshot',
+      fields:[
+        {key:'label', label:'Label', type:'text', placeholder:'before RM April uplift',
+         hint:'Optional, but it is how you will find this one again.'}
+      ],
+      onSave:function(v, done, fail){
+        call('takeForecastSnapshot',[v.label],function(r){
+          done();
+          if(r.stored) showOk('Snapshot '+r.snapshotId+' stored — '+r.changedRows+' rows changed.');
+          else showOk(r.reason||'Nothing stored — the forecast has not moved.');
+          reloadData();
+        }, fail);
+      }
+    });
+  };
+  Array.prototype.forEach.call(document.querySelectorAll('[data-snap]'),function(btn){
+    btn.onclick=function(){
+      var id=Number(btn.getAttribute('data-snap'));
+      var idx=S.snapshots.map(function(s){return s.id;}).indexOf(id);
+      var toId = idx===0 ? 0 : S.snapshots[idx-1].id;   // list is newest first
+      var host=document.getElementById('snapHost');
+      host.innerHTML='<div class="card"><div class="body">'+loading()+'</div></div>';
+      call('compareSnapshots',[id,toId],function(r){ snapDiff=r; renderSnapDiff(); },
+        function(m){ host.innerHTML='<div class="card"><div class="empty">'+esc(m)+'</div></div>'; },true);
+    };
+  });
+}
+
+function renderSnapDiff(){
+  var host=document.getElementById('snapHost'); if(!host||!snapDiff) return;
+  var d=snapDiff;
+  var toLabel = d.toId ? ('snapshot '+d.toId) : 'the forecast as it stands now';
+  var h='<div class="card"><h2>Snapshot '+d.fromId+' compared with '+toLabel+'</h2>';
+  h+='<div class="body">';
+  h+='<div style="display:flex;gap:26px;flex-wrap:wrap">';
+  h+='<div><div class="small muted">Segment-months changed</div>'+
+     '<div style="font-size:22px" class="num">'+d.changed+'</div></div>';
+  h+='<div><div class="small muted">Unchanged</div>'+
+     '<div style="font-size:22px" class="num muted">'+d.unchanged+'</div></div>';
+  h+='</div>';
+  if(!d.changed) h+='<div class="small muted" style="margin-top:10px">Identical. '+
+     'Nothing about the rates or mixes moved the forecast between these two points.</div>';
+  h+='</div>';
+
+  if(d.segments.length){
+    h+='<div class="body" style="padding:0;border-top:1px solid var(--line)">';
+    h+='<table><thead><tr><th>Brand</th><th>Location</th><th>Treatment</th>'+
+       '<th class="right">Months affected</th><th class="right">Mean change</th>'+
+       '</tr></thead><tbody>';
+    d.segments.forEach(function(s){
+      var hl=S.hlIds.filter(function(x){return x.id===s.hlId;})[0]||{};
+      h+='<tr><td class="small">'+esc(hl.brand||'')+'</td>'+
+         '<td class="small">'+esc(hl.geo||'')+'</td>'+
+         '<td class="small">'+esc(treatmentLabel(hl))+'</td>'+
+         '<td class="right num">'+s.months+'</td>'+
+         '<td class="right num '+(s.meanDiff>0?'up':'down')+'">'+
+         (s.meanDiff>0?'+':'')+money(s.meanDiff)+'</td></tr>';
+    });
+    h+='</tbody></table></div>';
+  }
+
+  if(d.diffs.length){
+    h+='<div class="body" style="padding:0;border-top:1px solid var(--line)">';
+    h+='<table><thead><tr><th>Brand</th><th>Treatment</th><th>Month</th>'+
+       '<th class="right">Before</th><th class="right">After</th>'+
+       '<th class="right">Change</th></tr></thead><tbody>';
+    d.diffs.slice(0,60).forEach(function(r){
+      var hl=S.hlIds.filter(function(x){return x.id===r.hlId;})[0]||{};
+      h+='<tr><td class="small">'+esc(hl.brand||'')+'</td>'+
+         '<td class="small">'+esc(treatmentLabel(hl))+'</td>'+
+         '<td class="num">'+esc(r.month)+'</td>'+
+         '<td class="right num">'+(r.before===null?'—':money(r.before))+'</td>'+
+         '<td class="right num">'+(r.after===null?'—':money(r.after))+'</td>'+
+         '<td class="right num '+(r.diff===null?'muted':(r.diff>0?'up':'down'))+'">'+
+         (r.diff===null?'new/removed':((r.diff>0?'+':'')+money(r.diff)+
+         (r.pct===null?'':' ('+(r.pct>0?'+':'')+r.pct.toFixed(1)+'%)')))+'</td></tr>';
+    });
+    h+='</tbody></table>';
+    if(d.diffs.length>60) h+='<div class="small muted" style="padding:8px 12px">'+
+       'Showing the 60 largest of '+d.diffs.length+' changes.</div>';
+    h+='</div>';
+  }
+  h+='</div>';
+  host.innerHTML=h;
+}
+
+/* ---- the change log ---- */
+function viewAuditLog(){
+  var h='<div class="card"><h2>Recent changes</h2><div class="body" style="padding:0">';
+  if(!S.recentAudit.length) h+='<div class="empty">Nothing recorded yet.</div>';
+  else{
+    h+='<table><thead><tr><th>When</th><th>Who</th><th>Action</th><th>What</th>'+
+       '<th>Field</th><th>From</th><th>To</th></tr></thead><tbody>';
+    S.recentAudit.forEach(function(a){
+      h+='<tr'+(a.success?'':' style="opacity:.6"')+'><td class="small num">'+esc(a.ts)+'</td>'+
+         '<td class="small">'+esc(a.email)+'</td>'+
+         '<td class="small">'+esc(a.action)+'</td>'+
+         '<td class="small">'+esc(a.entity)+' '+esc(a.entityId)+'</td>'+
+         '<td class="small muted">'+esc(a.field)+'</td>'+
+         '<td class="small num">'+esc(a.oldValue)+'</td>'+
+         '<td class="small num">'+esc(a.newValue||a.detail)+'</td></tr>';
+    });
+    h+='</tbody></table>';
+    h+='<div class="small muted" style="padding:8px 12px">Faded rows are attempts that were '+
+       'refused. Snapshots say what the forecast did; this says what somebody changed.</div>';
+  }
+  h+='</div></div>';
+  return h;
+}
+
+boot();
+</script>
+</body>
+</html>
