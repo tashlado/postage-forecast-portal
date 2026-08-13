@@ -7,6 +7,37 @@ Phase 8 is deliberately left unplanned because it depends on a decision only you
 those questions are in [§Decisions required](#decisions-required) and I have stopped rather
 than guessed.
 
+**Revision 2.** D3 and D8 answered, D1 answered in part. Net effect on the plan: S6 is
+unblocked and joins Phase 7; `include()` is now **kept and constrained** rather than deleted;
+M6's mechanism is settled even though its scope is not. No build step, no TypeScript, no
+bundler — the project stays plain hand-editable JavaScript, so phase numbering, effort and
+sequencing are all unchanged from revision 1.
+
+---
+
+## Environments
+
+Recorded per D1. **This is documentation, not configuration** — no clasp config for
+production is being created, and nothing is pushed to production until the promotion step
+late in this plan.
+
+| Role | Script ID | Status |
+|---|---|---|
+| Production | `1JHYSultHlRsjZkWcJ9JJ8CNEsBFCUYJVe_n1tENX14_g48ohbe80rGWw` | Recorded only. Do not push. No `.clasp.prod.json` until the promotion step. |
+| Test / dev — committed in `.clasp.json` | `1Br6gJdVW1-nOeOamrVhpMYCp5uCO79LQK5_m35eTbI9vkIGsDgZbeOiG` | **Confirmed test target.** What `clasp push` sends to, and where every phase is verified. |
+
+The two are different projects, deliberately. The repo was cloned from the test copy, so a
+plain `clasp push` reaches test and cannot reach production by accident — that is the safe
+default and should stay that way for all of Phases 0–8. Promotion to production is a
+separate, later runbook step with its own configuration, deliberately not built yet.
+
+**Pre-work, owned outside this plan:** the test copy's `Permissions` tab is to be anonymised
+directly in the sheet before Phase 0 begins, so that test audit rows do not accumulate
+against real staff email addresses. This is a data change, not a code change — it is not part
+of any phase and needs no branch. Worth doing first because `recordLogin_` stamps
+`Last_Login_TS` and every diagnostic write lands an `Audit_Log` row carrying the acting
+user's address; the longer testing runs, the more there is to clean up afterwards.
+
 ---
 
 ## Ground rules applied
@@ -50,7 +81,7 @@ M=3 / L=8.
 | P4 Audit_Log prewarmed per write | 2 | 0.90 | 1 | 1.80 | 2 |
 | P8 live read per row | 2 | 0.90 | 1 | 1.80 | 2 |
 | S5 requireMaintenance_ fails open | 2 | 0.90 | 1 | 1.80 | 7 |
-| S6 ALLOWALL framing | 2 | 0.90 | 1 | 1.80 | blocked (D3) |
+| S6 ALLOWALL framing | 2 | 0.90 | 1 | 1.80 | 7 |
 | S4 ungated snapshot job | 2 | 0.85 | 1 | 1.70 | 7 |
 | C2 nested lock | 2 | 0.80 | 1 | 1.60 | 1 |
 | S7 unbounded DENIED logging | 2 | 0.80 | 1 | 1.60 | 7 |
@@ -61,7 +92,7 @@ M=3 / L=8.
 | P2 full reload per save | 3 | **0.70** | 3 | 0.70 | 5 |
 | P5 audit read cost | 2 | 0.85 | 3 | 0.57 | 4 |
 | M3 no tests | 3 | 1.00 | 8 | 0.38 | see below |
-| M6 monolithic client | 3 | 1.00 | 8 | 0.38 | blocked (D8/D9) |
+| M6 monolithic client | 3 | 1.00 | 8 | 0.38 | blocked (D9) |
 
 **Four places I deviated from that order, deliberately:**
 
@@ -97,6 +128,11 @@ M=3 / L=8.
 Everything else depends on this. Right now there is one spreadsheet ID compiled into
 `utils.js`, so there is no way to point the code at a test copy without editing source you
 then have to remember not to commit.
+
+**Out of scope, per D1:** this phase does **not** create `.clasp.prod.json`, does not change
+the committed `scriptId`, and does not push anything to the production project. Promoting to
+production is a late runbook step, not part of the workbench setup. The only clasp-related
+change is documentation — recording both IDs, which §Environments has already done.
 
 **What changes**
 
@@ -395,7 +431,7 @@ re-import restores.
 
 **Branch** `phase-7-access-control` · **Effort** S · **Backend only**
 
-S4, S5, S7, S11. **S6 is excluded pending decision D3.**
+S4, S5, S6, S7, S11. S6 joins this phase now that D3 confirms the portal is never embedded.
 
 **What changes**
 
@@ -406,18 +442,28 @@ S4, S5, S7, S11. **S6 is excluded pending decision D3.**
 - **S5** — `requireMaintenance_` distinguishes "Permissions tab is empty" (bootstrap, allow)
   from "the read threw" (fail **closed**). The bootstrap allowance also gets a log line, so
   its use is visible.
+- **S6** — `setXFrameOptionsMode(ALLOWALL)` becomes `DEFAULT`, so the portal can only be
+  framed by pages on the same origin. D3 confirms nothing embeds it, so this is invisible.
 - **S7** — DENIED audit rows are rate-limited per email per execution window, so a loop
   cannot inflate the log.
-- **S11** — `include()` is deleted and `doGet` uses `createHtmlOutputFromFile` instead of
-  `createTemplateFromFile`. `index.html` contains no scriptlets, so this is a no-op at
-  runtime — verified by grep before the change.
+- **S11** — **revised, see below.** `include()` is *kept* and constrained to a whitelist of
+  known partial names rather than accepting any filename. `createTemplateFromFile` stays.
+
+> **Why S11 changed.** Revision 1 deleted `include()` and swapped `createTemplateFromFile`
+> for `createHtmlOutputFromFile`, with a warning that this depended on D8. D8 came back "no
+> build step" — which makes `include()` the *only* mechanism for splitting the 2,313-line
+> `index.html` into partials, and templating is what makes `include()` work at all. Deleting
+> it would remove the tool M6 needs. Constraining it closes the arbitrary-file-read seam
+> while leaving the mechanism intact.
 
 **Files** `snapshots.js`, `utils.js`, `auth.js`, `Code.js`
 
-**What could break** S4 is the one with teeth. If the gate is wrong the Monday trigger stops
+**What could break** S4 is the one with teeth: if the gate is wrong, the Monday trigger stops
 running and nobody notices for a week — the failure is silent by nature. S5 fails closed,
-which is correct but means a transient sheet read error now blocks maintenance functions
-rather than opening them.
+which is correct, but a transient sheet read error now blocks maintenance functions rather
+than opening them. S6 is safe given D3, but if the portal is ever *later* embedded, the
+symptom is a blank frame with a console error and no server-side trace — worth a comment in
+`doGet` recording why the mode is what it is.
 
 **How you verify**
 1. Editor → `showSnapshotTriggers()`. Confirm the weekly trigger is still installed.
@@ -426,7 +472,8 @@ rather than opening them.
    confirm from Executions that it completed and either stored a snapshot or logged
    "No change". This phase is not verified until a real trigger fire has been observed.
 4. History → Forecast over time. Confirm snapshots still list and **Compare** still works.
-5. Open the portal. It loads normally (proves the `createHtmlOutputFromFile` swap).
+5. Open the portal directly at its `/exec` URL. It loads and renders normally — this is the
+   S6 check, and per D3 it is the only way the portal is ever opened.
 6. Editor → `testMyPermissions()` → unchanged output.
 
 **Revert** Single commit revert. If the trigger was disturbed, `installWeeklySnapshot()`
@@ -452,10 +499,11 @@ settled.
 
 **Recommended prerequisite:** a Node regression harness for the pure engine. `computeModel_`
 has no Google dependencies, so a small `test/` directory with a `vm`-based loader can run
-`engine.js` + `utils.js` unmodified — no build step and no changes to shipped code. It needs
-a `.claspignore` so `clasp push` does not upload the test directory. This is the cheap half
-of M3 and is worth having before the refactor, not before Phase 3 (which carries its own
-in-run check).
+`engine.js` + `utils.js` **unmodified** — no build step, no TypeScript, and no changes to
+shipped code, which is exactly what D8 asks for. The harness reads the same `.js` files that
+`clasp` pushes; it does not transform them. It needs a `.claspignore` so `clasp push` does
+not upload the test directory. This is the cheap half of M3 and is worth having before the
+refactor, not before Phase 3 (which carries its own in-run check).
 
 **Files** `rates.js`, `mixes.js`, `actuals.js`, `validate.js`, `output.js`, plus `test/` and
 `.claspignore` if the harness is built
@@ -486,13 +534,16 @@ and living with for a day before promoting.
 
 ## Decisions required
 
-I've stopped here. Each item below is a phase I could plan properly once you answer, and
-would be guessing at otherwise.
+Each item below is a phase I could plan properly once you answer, and would be guessing at
+otherwise. **D1, D3 and D8 are answered** and marked as such; the rest still block.
 
 **D1 — Is there a test copy of the spreadsheet, and a second Apps Script deployment to push
-it to?** Your workflow says "one push to the test copy", but `.clasp.json` holds a single
-`scriptId` and it's committed. Phase 0 solves the *data* half; the *code* half needs a
-convention (a second clasp config, gitignored, or a documented swap). Which do you want?
+it to?** ✅ **Answered.** The `scriptId` already committed in `.clasp.json` (`1Br6gJdV…`) is
+the test/dev copy and stays the target for all of Phases 0–8; production
+(`1JHYSult…`) is recorded as documentation only, with no clasp config and no push until the
+promotion step. Both are in §Environments, along with the one piece of pre-work — anonymising
+the test copy's `Permissions` tab — which happens in the sheet, before Phase 0, outside this
+plan.
 
 **D2 — Will row-level scoping ever be switched on?** `Scope_Mapping` is empty and
 `SCOPE_DEFAULT_ALLOW` is `TRUE`, so C1, S1 and S3 are all currently unexploitable.
@@ -500,9 +551,9 @@ convention (a second clasp config, gitignored, or a documented swap). Which do y
 Phase 1 is correctly placed. *If no:* drop S1 and S3, demote Phase 1, and `Scope_Mapping` +
 `loadScopes_` + `scopeAllows_` become dead code to delete.
 
-**D3 — Is the portal embedded in any other page** (a Google Site, an intranet page, a
-Confluence macro)? S6 removes `ALLOWALL`, which breaks any embed. One-line fix, but I won't
-plan it blind.
+**D3 — Is the portal embedded in any other page?** ✅ **Answered: no.** The portal is only
+ever opened directly at its own web app URL. S6 is therefore unblocked and scheduled into
+Phase 7 — `ALLOWALL` becomes `DEFAULT`, with no user-visible effect.
 
 **D4 — Is the legacy workbook still reconciled against?** `runParityTest()` and
 `verifyPublishedOutput()` still read `SOURCE_SPREADSHEET_ID`. *If it's dead:* M4 removes
@@ -524,11 +575,29 @@ a form change.
 edit `Mix_ColdChain` directly, which bypasses validation, locking and audit. Either build the
 editor (U8, effort M) or remove the instruction and accept it as an admin-only tab.
 
-**D8 — Is a build step acceptable?** Bundler, TypeScript, `clasp` pushing from `src/`. This
-is the single largest constraint on M6 and every UI phase. If the answer is "it must stay
-hand-editable in the Apps Script editor", the client can still be split into multiple HTML
-partials via `include()` — which is a reason not to delete `include()` in Phase 7. **Tell me
-before Phase 7 ships.**
+**D8 — Is a build step acceptable?** ✅ **Answered: no.** No TypeScript, no bundler, no
+`src/` → `dist/` pipeline. The project stays plain, hand-editable JavaScript that can be
+edited directly in the Apps Script editor, and `clasp push` keeps sending exactly what is in
+the repo.
+
+Three consequences, all now folded into the plan:
+
+- **`include()` is kept and constrained, not deleted** (Phase 7, S11). Without a bundler it
+  is the only mechanism for splitting `index.html` into partials, and `createTemplateFromFile`
+  is what makes it work — so both stay. This is the dependency revision 1 flagged in advance.
+- **M6's mechanism is settled even though its scope is not.** Under "no build step", breaking
+  up the 2,313-line client means multiple `.html` partials stitched together with
+  `<?!= include('…') ?>`, not ES modules. Still blocked on D9 for *how far* to go, but the
+  technique is no longer an open question.
+- **Phase 8's Node harness is unaffected** — it always loaded the shipped `.js` files
+  unmodified through `vm`, precisely so it would need no build step. It stays as written.
+
+The trade-off you are accepting, stated plainly so it is not a surprise later: no type
+checking across ~11,300 lines that address sheet columns by string key, and no compile-time
+catch for the class of typo that `COL.RATE_BASE.Base_Rat` would produce (which evaluates to
+`undefined` and silently writes to column 0). The mitigations available without a build step
+are the Phase 8 Node harness and the existing `test*Write()` diagnostics. Worth knowing that
+is the safety net you have.
 
 **D9 — Is the UI overhaul a restyle of the current eight screens, or a rethink of the
 journeys?** This determines everything after Phase 8. Under "restyle", U4–U7 and U9 are a
@@ -552,14 +621,15 @@ Deliberately empty. These are the findings I will not sequence without the answe
   findings, then decide. Needs D5 too, since coverage is per scenario.
 - **C4, C5** — need D6, D5.
 - **S1, S3** — need D2.
-- **S6** — needs D3.
 - **S13** (raw HTML seams in `openForm`), **U2, U4, U5, U6, U7, U8, U9** — all UI, all need
   D9; several are moot under "rethink".
 - **U1** — needs D9 for placement, and a product call on whether `bulkRateChange` should be
   exposed to every role with `editRates` or gated further.
 - **M4** — needs D4.
-- **M5** (dead code sweep) — overlaps D4, D5, D6, D8. Best done once, after those land.
-- **M6** — needs D8 and D9.
+- **M5** (dead code sweep) — overlaps D4, D5 and D6. Best done once, after those land. Note
+  that D8 has removed `include()` from the dead-code list: it is now load-bearing for M6.
+- **M6** — needs D9 only. D8 has settled the technique (HTML partials joined by `include()`);
+  what remains is how far to go, which is the restyle-versus-rethink question.
 - **M8** (`SHEET_STRUCTURE.md` regeneration script) — trivial, but it should follow whatever
   schema changes come out of D5 and D6 rather than being written twice.
 
@@ -576,11 +646,11 @@ Deliberately empty. These are the findings I will not sequence without the answe
 | 4 | `phase-4-audit-reads` | M | backend | P5, P7 (read half) |
 | 5 | `phase-5-client-fetch` | M | **UI** | P2, U3 (fetch half) |
 | 6 | `phase-6-robustness` | M | backend | P3, C6, C7 |
-| 7 | `phase-7-access-control` | S | backend | S4, S5, S7, S11 |
+| 7 | `phase-7-access-control` | S | backend | S4, S5, S6, S7, S11 |
 | 8 | `phase-8-write-helper` | M | backend | M1, M2 (+ optional Node harness) |
 
 Eight backend phases, one UI phase, no phase mixing the two. Phases 3 and 5 should be
 re-scored against `docs/BASELINE.md` after Phase 0 and may be dropped.
 
-**Nothing has been implemented.** The first thing I need from you is D1 — without a test
-target, Phase 0 has nowhere to push.
+**Nothing has been implemented.** Phase 0 is ready to start against the confirmed test
+project, once the test copy's `Permissions` tab has been anonymised (see §Environments).
