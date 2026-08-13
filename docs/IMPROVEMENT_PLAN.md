@@ -7,7 +7,7 @@ Phase 8 is deliberately left unplanned because it depends on a decision only you
 those questions are in [§Decisions required](#decisions-required) and I have stopped rather
 than guessed.
 
-**Revision 2.** D3 and D8 answered, D1 answered in part. Net effect on the plan: S6 is
+**Revision 2.** D1, D3 and D8 answered. Net effect on the plan: S6 is
 unblocked and joins Phase 7; `include()` is now **kept and constrained** rather than deleted;
 M6's mechanism is settled even though its scope is not. No build step, no TypeScript, no
 bundler — the project stays plain hand-editable JavaScript, so phase numbering, effort and
