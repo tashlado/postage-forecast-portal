@@ -11,6 +11,8 @@
   "jsonExtensions": [
     ".json"
   ],
-  "filePushOrder": [],
+  "filePushOrder": [
+    "utils.js"
+  ],
   "skipSubdirectories": false
 }

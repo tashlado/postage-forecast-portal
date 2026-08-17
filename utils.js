@@ -8,15 +8,63 @@
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 1. CONFIGURATION  —  the only line you must edit
+// 1. CONFIGURATION
+//
+// Which spreadsheet this project reads and writes is resolved at run time, not
+// compiled in, so one code base can be pointed at a test copy without editing a
+// source file you then have to remember not to commit:
+//
+//   Script Property `SPREADSHEET_ID`   used when it is set
+//   SPREADSHEET_ID_FALLBACK            used when it is not
+//
+// The fallback is the literal this file has always carried, so a project with no
+// property set behaves exactly as it did before the indirection existed.
+//
+// Never read SPREADSHEET_ID_FALLBACK anywhere but in spreadsheetId_() — that
+// function is the only thing that knows whether a property is in play. Run
+// showEnvironment() to see which of the two is live before running anything that
+// writes.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const SPREADSHEET_ID = '1UgIBKzJAEJM-U2MzmcEIBuf21scLDCcu9ZOZKtI2KLE';
+const SPREADSHEET_ID_FALLBACK = '1UgIBKzJAEJM-U2MzmcEIBuf21scLDCcu9ZOZKtI2KLE';
 
 const ENGINE_VERSION   = '1.0.0';
 const OPEN_ENDED_DATE  = '9999-12-31';   // sentinel meaning "no end date"
 const DEFAULT_TZ       = 'Europe/London';
 const PERF_LOG_ENABLED = true;
+
+const _envIds_ = {};
+
+/**
+ * Resolve one spreadsheet ID from a Script Property, falling back to a literal.
+ * Returns { id, from } where `from` is 'property' or 'fallback', memoised for
+ * the execution so it costs one PropertiesService call however often it is asked.
+ *
+ * A read error on the property store is deliberately NOT treated as "no property
+ * set". Swallowed, the two are indistinguishable, and guessing wrong here has the
+ * worst consequence available in this codebase: a test project silently reading
+ * and writing the production forecast. So it refuses rather than guesses.
+ */
+function envId_(propertyName, fallback) {
+  if (_envIds_[propertyName]) return _envIds_[propertyName];
+
+  let raw;
+  try {
+    raw = PropertiesService.getScriptProperties().getProperty(propertyName);
+  } catch (e) {
+    throw new Error('Could not read Script Properties, so the target spreadsheet cannot be ' +
+                    'confirmed and this run is refusing to guess at it. Google said: ' + e.message);
+  }
+
+  const v = safeStr(raw);
+  _envIds_[propertyName] = v ? { id: v, from: 'property' } : { id: fallback, from: 'fallback' };
+  return _envIds_[propertyName];
+}
+
+/** The spreadsheet holding all app data. The only correct way to name it. */
+function spreadsheetId_() {
+  return envId_('SPREADSHEET_ID', SPREADSHEET_ID_FALLBACK).id;
+}
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -247,7 +295,7 @@ const _sheetDataCache_ = {};
 const _nextIdCache_    = {};
 
 function _getSs_() {
-  if (!_ssCache_) _ssCache_ = SpreadsheetApp.openById(SPREADSHEET_ID);
+  if (!_ssCache_) _ssCache_ = SpreadsheetApp.openById(spreadsheetId_());
   return _ssCache_;
 }
 
@@ -294,7 +342,7 @@ function prewarmSheetCache_(sheetNames) {
   // ---- Path 1: Advanced Sheets Service ------------------------------------
   if (typeof Sheets !== 'undefined' && Sheets.Spreadsheets && Sheets.Spreadsheets.Values) {
     try {
-      const resp = Sheets.Spreadsheets.Values.batchGet(SPREADSHEET_ID, {
+      const resp = Sheets.Spreadsheets.Values.batchGet(spreadsheetId_(), {
         ranges: ranges,
         valueRenderOption:    'UNFORMATTED_VALUE',
         dateTimeRenderOption: 'SERIAL_NUMBER'
@@ -308,7 +356,7 @@ function prewarmSheetCache_(sheetNames) {
 
   // ---- Path 2: Sheets REST API via the script's own OAuth token ----------
   try {
-    const url = 'https://sheets.googleapis.com/v4/spreadsheets/' + SPREADSHEET_ID +
+    const url = 'https://sheets.googleapis.com/v4/spreadsheets/' + spreadsheetId_() +
                 '/values:batchGet?' +
                 ranges.map(r => 'ranges=' + encodeURIComponent(r)).join('&') +
                 '&valueRenderOption=UNFORMATTED_VALUE&dateTimeRenderOption=SERIAL_NUMBER';
@@ -671,4 +719,64 @@ function requireMaintenance_() {
   if (perms.found && perms.active && (perms.allAccess || perms.capabilities.manageUsers)) return true;
   logAudit_('DENIED', 'MAINTENANCE', '', '', '', '', 'not an administrator', false);
   throw new Error('That is an administrator function.');
+}
+
+
+/**
+ * Which spreadsheet is this project about to read and write?
+ *
+ * Run this before anything that writes, and first of all after moving between
+ * projects. Resolving the ID at run time is what makes a test copy possible, but
+ * it also means the answer is no longer visible by reading the source — so there
+ * has to be one function whose whole job is to tell you. Read only.
+ */
+function showEnvironment() {
+  requireMaintenance_();
+  Logger.log('=== ENVIRONMENT ===');
+
+  let scriptId = '';
+  try { scriptId = ScriptApp.getScriptId(); } catch (e) { scriptId = '(unavailable)'; }
+  Logger.log('  script project  : ' + scriptId);
+  Logger.log('');
+
+  const target = envId_('SPREADSHEET_ID', SPREADSHEET_ID_FALLBACK);
+  Logger.log('--- app data: everything the portal reads and writes ---');
+  Logger.log('  spreadsheet ID  : ' + target.id);
+  Logger.log('  resolved from   : ' + (target.from === 'property'
+    ? 'the SPREADSHEET_ID Script Property'
+    : 'the committed fallback in utils.gs — no SPREADSHEET_ID property is set'));
+
+  let name = '';
+  try {
+    name = SpreadsheetApp.openById(target.id).getName();
+    Logger.log('  file name       : ' + name);
+    Logger.log('  url             : https://docs.google.com/spreadsheets/d/' + target.id + '/edit');
+  } catch (e) {
+    Logger.log('  CANNOT OPEN IT  : ' + e.message);
+    Logger.log('  Check the ID above is a Google Sheet this account can open.');
+  }
+
+  // Reported only while migrate.gs is present — it is a candidate for removal
+  // (FINDINGS.md M4), so this must not become the thing that keeps it alive.
+  let source = null;
+  if (typeof sourceEnvironment_ === 'function') {
+    source = sourceEnvironment_();
+    Logger.log('');
+    Logger.log('--- legacy workbook: read only, migration and parity tests ---');
+    Logger.log('  spreadsheet ID  : ' + source.id);
+    Logger.log('  resolved from   : ' + (source.from === 'property'
+      ? 'the SOURCE_SPREADSHEET_ID Script Property'
+      : 'the committed fallback in migrate.gs'));
+  }
+
+  Logger.log('');
+  Logger.log('Every write from this project lands in the "app data" spreadsheet above.');
+  Logger.log('To point this project elsewhere: Project Settings > Script Properties > add');
+  Logger.log('SPREADSHEET_ID. Delete the property to return to the committed fallback.');
+
+  return {
+    scriptId: scriptId,
+    target: { id: target.id, from: target.from, name: name },
+    source: source ? { id: source.id, from: source.from } : null
+  };
 }

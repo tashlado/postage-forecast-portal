@@ -41,7 +41,7 @@ function runParityTest() {
     src = readSourceTab_('Output');
   } catch (e) {
     Logger.log('Could not read the Output tab from the source workbook: ' + e.message);
-    Logger.log('Check SOURCE_SPREADSHEET_ID in migrate.gs.');
+    Logger.log('Run showEnvironment() to see which workbook is being read.');
     return { ok: false };
   }
 

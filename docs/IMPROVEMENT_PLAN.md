@@ -2,10 +2,10 @@
 
 Derived from [FINDINGS.md](FINDINGS.md) and [ARCHITECTURE.md](ARCHITECTURE.md).
 
-**Nothing here has been implemented.** Phases 0–8 are ready to execute. Everything after
-Phase 8 is deliberately left unplanned because it depends on a decision only you can make —
-those questions are in [§Decisions required](#decisions-required) and I have stopped rather
-than guessed.
+**Phase 0's code change is implemented; its measurements are not.** Phases 1–8 are ready to
+execute. Everything after Phase 8 is deliberately left unplanned because it depends on a
+decision only you can make — those questions are in
+[§Decisions required](#decisions-required) and I have stopped rather than guessed.
 
 **Revision 2.** D1, D3 and D8 answered. Net effect on the plan: S6 is
 unblocked and joins Phase 7; `include()` is now **kept and constrained** rather than deleted;
@@ -30,6 +30,19 @@ The two are different projects, deliberately. The repo was cloned from the test 
 plain `clasp push` reaches test and cannot reach production by accident — that is the safe
 default and should stay that way for all of Phases 0–8. Promotion to production is a
 separate, later runbook step with its own configuration, deliberately not built yet.
+
+**The test project has no web app deployment** (confirmed 2026-08-14 — Manage deployments shows
+"This project has not been deployed yet"). Its portal is reached at the `/dev` head URL, which is
+*preferable* for verification: `/dev` serves HEAD, so it always reflects the last `clasp push`,
+whereas an `/exec` deployment serves a pinned version and would need a manual new-version step
+after every push — forget that once and you verify stale code and get a false pass. Use `/dev` for
+every phase's in-app checks. **Phase 7 is the exception** and needs a real deployment created
+first; see its verification notes. `/dev` also requires script edit access, so any check involving
+a second user needs a deployment too.
+
+**The test project's read path is also ~6 × slower than production's** — see
+[BASELINE.md](BASELINE.md) and finding **P14**. That is why performance figures come from
+production; §The regression oracle below sets out the split.
 
 **Pre-work, owned outside this plan:** the test copy's `Permissions` tab is to be anonymised
 directly in the sheet before Phase 0 begins, so that test audit rows do not accumulate
@@ -65,6 +78,23 @@ That covers the engine and the publish path exactly. It does **not** cover the w
 those are covered by the existing self-cleaning diagnostics `testRateWrite()`,
 `testMixWrite()`, `testStructureWrite()` and `testAuditTrail()`, which are named per phase
 below where relevant.
+
+### Measure in production, verify writes in test
+
+Phase 0 established that the two environments are **not** comparable: production batches its sheet
+reads (`rest` path, 559 ms for 8 tabs), the test project falls through to one round-trip per tab
+(`fallback`, 3,468 ms for the same 8 tabs). Test is roughly **6 × slower on reads** because its GCP
+project lacks the Sheets API — finding **P14**. So:
+
+- **Performance figures come from production**, which is read-only for every measurement involved
+  (`testApiPayload()`, `previewOutput()`, portal page loads and dropdown changes). See
+  [BASELINE.md](BASELINE.md) §Where each measurement is taken.
+- **Every write — verification or measurement — stays in the test copy.** No exceptions, and never
+  a `test*Write()` function against production.
+- **Per-phase comparisons use BASELINE.md's *test* column, not its production column.** Each phase
+  is verified in test, so comparing its `testApiPayload()` result against the production column
+  would show a spurious ~6 × regression on every phase. This trap disappears once P14 is fixed and
+  the two columns converge.
 
 ---
 
@@ -153,7 +183,8 @@ change is documentation — recording both IDs, which §Environments has already
 the highest-consequence mistake available in this codebase. The fallback must be the
 existing literal, and `showEnvironment()` must be run before anything else.
 
-**How you verify**
+**How you verify** — spelled out click by click in
+[PHASE_0_VERIFICATION.md](PHASE_0_VERIFICATION.md); the summary is:
 1. Editor → run `showEnvironment()`. Logs the production ID and "from fallback".
 2. Editor → `diagnoseBatchGet()` and `showPortalUrl()` still pass.
 3. Open the portal. Dashboard renders, "Last published" is unchanged.
@@ -474,6 +505,11 @@ symptom is a blank frame with a console error and no server-side trace — worth
 4. History → Forecast over time. Confirm snapshots still list and **Compare** still works.
 5. Open the portal directly at its `/exec` URL. It loads and renders normally — this is the
    S6 check, and per D3 it is the only way the portal is ever opened.
+   **Prerequisite for this phase only:** the test project has no web app deployment (§Environments),
+   and `/dev` cannot exercise `X-Frame-Options`. Create one before starting Phase 7 —
+   **Deploy → New deployment →** gear **→ Web app →** Execute as *Me*, Who has access
+   *Anyone within HeliosX* — and from then on create a new version after every `clasp push`, or
+   the `/exec` URL will serve stale code and every later check on it is a false pass.
 6. Editor → `testMyPermissions()` → unchanged output.
 
 **Revert** Single commit revert. If the trigger was disturbed, `installWeeklySnapshot()`
@@ -652,5 +688,7 @@ Deliberately empty. These are the findings I will not sequence without the answe
 Eight backend phases, one UI phase, no phase mixing the two. Phases 3 and 5 should be
 re-scored against `docs/BASELINE.md` after Phase 0 and may be dropped.
 
-**Nothing has been implemented.** Phase 0 is ready to start against the confirmed test
-project, once the test copy's `Permissions` tab has been anonymised (see §Environments).
+**Phase 0's code change is done** (`spreadsheetId_()` / `sourceSpreadsheetId_()` /
+`showEnvironment()`, on branch `phase-0-environment`). Its second half — the measured
+baseline in [BASELINE.md](BASELINE.md) — is still blank, and needs the editor and a browser.
+Phases 3 and 5 cannot be re-scored until it is filled in. Phases 1–8 otherwise unstarted.

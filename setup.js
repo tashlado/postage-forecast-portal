@@ -35,8 +35,9 @@ function setupAll() {
 
 function setupCreateAllTabs() {
   requireMaintenance_();
-  if (SPREADSHEET_ID === 'PASTE_YOUR_SPREADSHEET_ID_HERE') {
-    throw new Error('Set SPREADSHEET_ID at the top of utils.gs before running setup.');
+  if (spreadsheetId_() === 'PASTE_YOUR_SPREADSHEET_ID_HERE') {
+    throw new Error('Set SPREADSHEET_ID_FALLBACK at the top of utils.gs, or a SPREADSHEET_ID ' +
+                    'Script Property, before running setup. Run showEnvironment() to check.');
   }
 
   const ss = _getSs_();
@@ -210,21 +211,44 @@ const SEED_ROLES = [
   ['VIEWER',   false, false, false, false, false, false, false, false, false]
 ];
 
-const SEED_CONFIG = [
-  ['HORIZON_START',             '2026-01-01', 'First month of the forecast horizon'],
-  ['HORIZON_MONTHS',            '36',         'Number of months in the horizon'],
-  ['OPEN_ENDED_DATE',           '9999-12-31', 'Sentinel Valid_To meaning no end date'],
-  ['AUTO_CALC_ON_WRITE',        'FALSE',      'Recalculate automatically after every write'],
-  ['VALIDATION_BLOCKS_PUBLISH', 'TRUE',       'Block publishing when validation returns ERROR'],
-  ['ENGINE_VERSION',            ENGINE_VERSION, 'Version stamped onto each calculation run'],
-  ['REPORTING_CURRENCY',        'GBP',        'Label only — no FX conversion is applied'],
-  ['BOOTSTRAP_OWNER_EMAIL',     '',           'Escape hatch: this email always has ADMIN'],
-  ['SCOPE_DEFAULT_ALLOW',       'TRUE',       'What a user with no Scope_Mapping rows can see. TRUE = everything'],
-  ['METABASE_URL',              '',           'e.g. https://metabase.heliosx.co — leave blank until tested'],
-  ['METABASE_CARD_ID',          '',           'The saved question ID that returns actual spend and orders'],
-  ['ACTUALS_VARIANCE_WARN_PCT', '10',         'Flag a forecast-vs-actual gap larger than this percentage'],
-  ['ACTUALS_WL_TREATMENTS',     'WeightLossGlp1', 'Treatment values in the import that count as weight loss. Comma separated.']
-];
+/**
+ * Config seed rows.
+ *
+ * A function rather than a `const` like every seed above it, because this is the
+ * one seed that reads a value declared in another file: ENGINE_VERSION, in
+ * utils.gs.
+ *
+ * Apps Script evaluates script files in the project's file order, in one shared
+ * scope, and a top-level `const`/`let` is in the temporal dead zone until its own
+ * file has been evaluated. So a top-level array literal here throws
+ * `ReferenceError: ENGINE_VERSION is not defined` whenever setup.gs is ordered
+ * before utils.gs — which is what a plain `clasp push` produces, because it
+ * pushes alphabetically and "setup" sorts before "utils". The error fires at file
+ * load, before any function runs, so it takes down every entry point including
+ * doGet, and no amount of reverting file *contents* fixes a file *order* problem.
+ *
+ * Building the rows inside a function defers the read until every file is loaded,
+ * which makes file order irrelevant. `.clasp.json` also pins utils.js first as
+ * defence in depth. See FINDINGS.md M9 — and please don't turn this back into a
+ * const.
+ */
+function seedConfigRows_() {
+  return [
+    ['HORIZON_START',             '2026-01-01', 'First month of the forecast horizon'],
+    ['HORIZON_MONTHS',            '36',         'Number of months in the horizon'],
+    ['OPEN_ENDED_DATE',           '9999-12-31', 'Sentinel Valid_To meaning no end date'],
+    ['AUTO_CALC_ON_WRITE',        'FALSE',      'Recalculate automatically after every write'],
+    ['VALIDATION_BLOCKS_PUBLISH', 'TRUE',       'Block publishing when validation returns ERROR'],
+    ['ENGINE_VERSION',            ENGINE_VERSION, 'Version stamped onto each calculation run'],
+    ['REPORTING_CURRENCY',        'GBP',        'Label only — no FX conversion is applied'],
+    ['BOOTSTRAP_OWNER_EMAIL',     '',           'Escape hatch: this email always has ADMIN'],
+    ['SCOPE_DEFAULT_ALLOW',       'TRUE',       'What a user with no Scope_Mapping rows can see. TRUE = everything'],
+    ['METABASE_URL',              '',           'e.g. https://metabase.heliosx.co — leave blank until tested'],
+    ['METABASE_CARD_ID',          '',           'The saved question ID that returns actual spend and orders'],
+    ['ACTUALS_VARIANCE_WARN_PCT', '10',         'Flag a forecast-vs-actual gap larger than this percentage'],
+    ['ACTUALS_WL_TREATMENTS',     'WeightLossGlp1', 'Treatment values in the import that count as weight loss. Comma separated.']
+  ];
+}
 
 
 function setupSeedReferenceData() {
@@ -271,7 +295,7 @@ function setupSeedReferenceData() {
     return row;
   }, r => r[0], d => safeStr(d[COL.PORTAL_ROLES.Role]));
 
-  n += seedTable_('CONFIG', 'Key', SEED_CONFIG, (r) => {
+  n += seedTable_('CONFIG', 'Key', seedConfigRows_(), (r) => {
     const row = blankRow_('CONFIG'), C = COL.CONFIG;
     row[C.Key] = r[0]; row[C.Value] = r[1]; row[C.Description] = r[2];
     row[C.Updated_TS] = new Date(); row[C.Updated_By] = 'setup';

@@ -15,9 +15,23 @@
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CONFIGURATION — the Google Sheets copy of Postage_RFQ3_New.xlsx
+//
+// Resolved at run time the same way as the app's own spreadsheet (see utils.gs
+// §1): the Script Property `SOURCE_SPREADSHEET_ID` wins if set, otherwise the
+// literal below. Read it through sourceSpreadsheetId_(), never directly.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const SOURCE_SPREADSHEET_ID = '18a-Pfaa3hy0OlNcl3jYri-qccLku13JyDhfm0lOq4io';
+const SOURCE_SPREADSHEET_ID_FALLBACK = '18a-Pfaa3hy0OlNcl3jYri-qccLku13JyDhfm0lOq4io';
+
+/** The legacy workbook, and whether it came from a property or the fallback. */
+function sourceEnvironment_() {
+  return envId_('SOURCE_SPREADSHEET_ID', SOURCE_SPREADSHEET_ID_FALLBACK);
+}
+
+/** The legacy workbook's ID. The only correct way to name it. */
+function sourceSpreadsheetId_() {
+  return sourceEnvironment_().id;
+}
 
 /** Tab names in the SOURCE workbook. Change only if yours are named differently. */
 const SRC = {
@@ -57,7 +71,7 @@ const _srcTabResolved_ = {};
 /** Every tab name in the source workbook, as actually spelled. */
 function sourceTabNames_() {
   if (_srcTabNames_) return _srcTabNames_;
-  _srcTabNames_ = SpreadsheetApp.openById(SOURCE_SPREADSHEET_ID)
+  _srcTabNames_ = SpreadsheetApp.openById(sourceSpreadsheetId_())
                     .getSheets().map(s => s.getName());
   return _srcTabNames_;
 }
@@ -101,7 +115,7 @@ function readSourceTab_(tabName) {
   if (typeof Sheets !== 'undefined' && Sheets.Spreadsheets && Sheets.Spreadsheets.Values) {
     try {
       const resp = Sheets.Spreadsheets.Values.get(
-        SOURCE_SPREADSHEET_ID, "'" + actual.replace(/'/g, "''") + "'",
+        sourceSpreadsheetId_(), "'" + actual.replace(/'/g, "''") + "'",
         { valueRenderOption: 'UNFORMATTED_VALUE', dateTimeRenderOption: 'SERIAL_NUMBER' });
       rows = resp.values || [];
     } catch (err) {
@@ -109,7 +123,7 @@ function readSourceTab_(tabName) {
                       'Google said: ' + err.message);
     }
   } else {
-    const sh = SpreadsheetApp.openById(SOURCE_SPREADSHEET_ID).getSheetByName(actual);
+    const sh = SpreadsheetApp.openById(sourceSpreadsheetId_()).getSheetByName(actual);
     if (!sh) throw new Error('Source tab "' + actual + '" not found.');
     rows = sh.getDataRange().getValues();
   }
@@ -126,7 +140,7 @@ function readSourceTab_(tabName) {
 function listSourceTabs() {
   requireMaintenance_();
   Logger.log('=== SOURCE WORKBOOK TABS ===');
-  Logger.log('Workbook: ' + SpreadsheetApp.openById(SOURCE_SPREADSHEET_ID).getName());
+  Logger.log('Workbook: ' + SpreadsheetApp.openById(sourceSpreadsheetId_()).getName());
   Logger.log('');
   const names = sourceTabNames_();
   Logger.log('--- all ' + names.length + ' tabs, exactly as spelled ---');
@@ -211,15 +225,15 @@ function migratePreflight() {
 
   // -- source reachable? ----------------------------------------------------
   try {
-    SpreadsheetApp.openById(SOURCE_SPREADSHEET_ID).getName();
+    SpreadsheetApp.openById(sourceSpreadsheetId_()).getName();
   } catch (e) {
     Logger.log('CANNOT OPEN SOURCE WORKBOOK.');
-    Logger.log('  ID used: ' + SOURCE_SPREADSHEET_ID);
+    Logger.log('  ID used: ' + sourceSpreadsheetId_());
     Logger.log('  ' + e.message);
     Logger.log('Check the ID, and that the file is a Google Sheet (not still an .xlsx).');
     return { ok: false, problems: ['source unreadable'] };
   }
-  Logger.log('Source workbook: ' + SpreadsheetApp.openById(SOURCE_SPREADSHEET_ID).getName());
+  Logger.log('Source workbook: ' + SpreadsheetApp.openById(sourceSpreadsheetId_()).getName());
   Logger.log('');
 
   // -- tabs present and the right size? -------------------------------------

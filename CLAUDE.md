@@ -8,7 +8,8 @@ A Google Apps Script web app (the "Postage Forecast Portal") that replaces a
 spreadsheet-formula forecasting workbook (originally an 8,352-row `Modelling`
 tab driven by SUMPRODUCT/SUMIFS) with a normalised data model, a pure
 calculation engine, role/scope-based access control, and a full audit trail.
-All data lives in one Google Sheet (`SPREADSHEET_ID` in `utils.js`); the app
+All data lives in one Google Sheet (resolved by `spreadsheetId_()` in `utils.js` —
+the `SPREADSHEET_ID` Script Property if set, else `SPREADSHEET_ID_FALLBACK`); the app
 itself is a single HTML file served by `doGet`, backed by `.js` files that are
 really Apps Script `.gs` files (renamed for this repo/editor).
 
@@ -22,14 +23,16 @@ conventional sense — this is Apps Script, deployed via `clasp`.
 
 - `clasp push` — push local files to the Apps Script project
 - `clasp pull` — pull from the Apps Script project (rarely needed; this repo is push-of-record)
-- `clasp open` — open the project in the Apps Script editor
+- `clasp open-script` — open the project in the Apps Script editor (clasp 3.x renamed
+  `open`; `clasp open-web-app` opens the deployed portal, `clasp status` still works)
 
 "Tests" are diagnostic functions run manually from the Apps Script editor
 (Run menu), not from a CLI. They log to `Logger.log` and return a summary
 object. Key ones, roughly in the order you'd use them on a fresh setup:
 
+- `showEnvironment()` (`utils.js`) — **run this first**: which spreadsheet this project is pointed at, and whether that came from a Script Property or the committed fallback
 - `setupAll()` (`setup.js`) — idempotent: creates all 30+ tabs and seeds reference data
-- `migratePreflight()` / `migrateAll()` / `migrateVerify()` (`migrate.js`) — one-time load from the original workbook (`SOURCE_SPREADSHEET_ID`)
+- `migratePreflight()` / `migrateAll()` / `migrateVerify()` (`migrate.js`) — one-time load from the original workbook (`SOURCE_SPREADSHEET_ID` property, else `SOURCE_SPREADSHEET_ID_FALLBACK`)
 - `runEngineUnitTests()` / `runParityTest()` (`enginetest.js`) — engine correctness and parity against the original workbook's Output tab
 - `testMyPermissions()` (`auth.js`) — shows what the current user can see/do
 - `testRateWrite()`, `testMixWrite()`, `testStructureWrite()`, `testAuditTrail()` — round-trip create/refuse/update/delete checks for their respective areas, self-cleaning
@@ -177,6 +180,17 @@ Any new client-side write should go through `call()`, not raw
 
 ## Working in this repo
 
+- **Never reference an identifier declared in another file from a file's top
+  level** — only from inside a function body. Apps Script evaluates files in the
+  project's file order in one shared scope, and a top-level `const`/`let` is in
+  the temporal dead zone until its own file has been evaluated, so a top-level
+  read of another file's constant throws `ReferenceError` depending purely on file
+  order. `clasp push` orders files alphabetically, so `setup.gs` loads before
+  `utils.gs`. This bricked the whole project once (FINDINGS.md M9): the error
+  fires at load time, before any function runs, so every entry point including
+  `doGet` fails, and `git revert` cannot fix it because the breakage is file
+  *order*, not file *contents*. `.clasp.json` pins `utils.js` first as defence in
+  depth, but the rule is what actually protects you.
 - Changing a table's shape means editing `TABLES` in `utils.js`, not the
   sheet directly — `setupCreateAllTabs()` reconciles the real sheet to match.
 - Never hardcode a brand, geo, carrier, method, or surcharge type in code —
