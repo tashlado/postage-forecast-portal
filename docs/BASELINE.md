@@ -1,9 +1,13 @@
 # Postage Forecast Portal — measured baseline
 
-**Status: partially captured.** `diagnoseBatchGet()` is done for both environments and is what
-established that they are not comparable. `testApiPayload()` and the browser timings are still
-blank — they need the Apps Script editor and a browser, so they are a step for a human, not
-something Phase 0's code change could do for itself.
+**Status: substantially captured, with known gaps left deliberately blank (see notes below).**
+`diagnoseBatchGet()` and `testApiPayload()` are done for both environments. The browser
+dropdown and save timings have been captured from the **test** portal only — production
+currently has no built interface to test against (this project is pre-launch; production has
+not yet been through its promotion step, so its live web app still serves the pre-Step-8
+placeholder page). The exact `google.script.run` call count for a save, and the total
+`Audit_Log` row count, were not captured and are left blank rather than guessed — pick these up
+before Phase 4 or Phase 5 specifically need them.
 
 A blank cell means nobody has measured it. Every figure here is either **measured** or
 explicitly tagged `DERIVED — not measured` with the arithmetic shown; there is exactly one
@@ -79,11 +83,11 @@ of the execution log.
 
 | Measure | Production | Test |
 |---|---|---|
-| `initApp()` | ____ ms | ____ ms |
-| `initApp()` payload | ~____ KB | ~____ KB |
-| `loadAllAppData()` | ____ ms | ____ ms |
-| `loadAllAppData()` payload | ~____ KB | ~____ KB |
-| **Total** | ____ ms | ____ ms |
+| `initApp()` | 540 ms | 3133 ms |
+| `initApp()` payload | ~63 KB | ~63 KB |
+| `loadAllAppData()` | 569 ms | 3775 ms |
+| `loadAllAppData()` payload | ~573 KB | ~579 KB |
+| **Total** | 1081 ms | 6770 ms |
 
 **Run it at least three times in each environment.** Every run is a **cold** execution — there is
 no warm run to compare against, because every cache in this codebase is module-level and resets
@@ -97,12 +101,13 @@ median in the table above. Do not quote a single run as the baseline.
 
 | Run | Production `initMs` | Production `bulkMs` | Production total | Test `initMs` | Test `bulkMs` |
 |---|---|---|---|---|---|
-| 1 | 281 | 399 | **680** | | |
-| 2 | 781 | 735 | **1,516** | | |
-| 3 | | | | | |
-| 4 (optional) | | | | | |
-| **Median** | | | | | |
-| **Range so far** | 281–781 | 399–735 | 680–1,516 | | |
+| 1 | 281 | 399 | **680** |4482 |5090 |
+| 2 | 781 | 735 | **1,516** |2995 |3775 |
+| 3 | 572|351 | 923|3133 |2374 |
+| 4 (optional) |540 |596 |1136 | | |
+| 5 (optional) |512 |569 |1081 | | |
+| **Median** | 540| 569| 1081|3133 |3775 |
+| **Range so far** | 281–781 | 351–735 | 680–1,516 |2995-4482 |2374-5090 |
 
 **Both production runs above are cold and both are legitimate.** The 2.2 × spread is noise, not a
 second-run penalty. Corroboration: production's `diagnoseBatchGet()` batched read of 8 tabs
@@ -121,18 +126,18 @@ here.
 
 | Table | Rows |
 |---|---|
-| High Level IDs | |
-| Modelling IDs | |
+| High Level IDs | 18|
+| Modelling IDs |254 |
 | Base rates | **286** |
 | Surcharges | **1,649** |
-| Method mixes | |
-| Letter/parcel | |
-| Cold chain | |
-| Output rows | |
-| Actuals | |
-| Snapshots | |
-| Validation findings | |
-| Recent audit | |
+| Method mixes |374 |
+| Letter/parcel |18 |
+| Cold chain |141 |
+| Output rows |648 |
+| Actuals | 130|
+| Snapshots |2 |
+| Validation findings |2 |
+| Recent audit | 50|
 | `Audit_Log` total rows (read the tab directly — this is the one that grows forever) | |
 
 Identical across both production runs, as expected.
@@ -252,6 +257,9 @@ The one save measurement is handled separately, below, and does not run here.
 
 ### Page load
 
+**Not captured.** Left blank — not needed to unblock Phase 1 or Phase 2, and can be picked up
+alongside the Phase 3/4 re-scoring once production is live.
+
 | Measure | Value |
 |---|---|
 | First paint / frame visible | ____ s |
@@ -262,24 +270,30 @@ The one save measurement is handled separately, below, and does not run here.
 ### Rates tab — one dropdown change
 
 This is the P1 measurement, and the one that decides whether Phase 3 happens at all. Rates
-tab → change the segment dropdown, then the route dropdown. The server call behind it is
-`getResolvedByMonth`, which runs the entire forecast engine to populate one table.
+tab → change the segment dropdown. The server call behind it is `getResolvedByMonth`, which
+runs the entire forecast engine to populate one table.
+
+**Captured 2026-08-18, from the TEST portal** (production has no live interface yet — this
+project is pre-launch, so there is no production dashboard to measure against). Route dropdown
+and the exact round-trip breakdown were not isolated separately from the overall change.
 
 | Measure | Value |
 |---|---|
-| Segment dropdown change, click to redraw | ____ s |
-| Route dropdown change, click to redraw | ____ s |
-| `getResolvedByMonth` round-trip | ____ s |
-| Number of `google.script.run` calls fired | |
+| Segment dropdown change, click to redraw | **~5–10 s (test)** |
+| Route dropdown change, click to redraw | not isolated separately — see above |
+| `getResolvedByMonth` round-trip | not isolated separately |
+| Number of `google.script.run` calls fired | not captured |
 
 **Phase 3 decision rule, from the plan: if a Rates dropdown change in PRODUCTION is already under
-1.5s, skip Phase 3.** The environment matters — the same interaction in test would be roughly 6 ×
-slower and would keep a phase alive that production does not need. Record the decision here once
-measured:
+1.5s, skip Phase 3.** This cannot be answered directly yet, because production has no live
+interface to test. Dividing the test figure by the known ~6× test/production gap gives a rough
+estimated production equivalent of **~1–1.7 s** — too close to the 1.5s threshold to call either
+way.
 
-**Phase 3 verdict:** ____________________
+**Phase 3 verdict:** **Inconclusive — revisit once production is promoted and can be measured
+directly.** Do not use the ~1–1.7s estimate as a substitute for a real measurement.
 
-Worth timing the same interaction on the Mixes tab while you are here, since
+Worth timing the same interaction on the Mixes tab once production is live, since
 `getMethodMixGrid` and `getLetterParcelGrid` do the same thing and both swallow engine
 failures in a bare `catch`:
 
@@ -299,21 +313,33 @@ call count is client-side behaviour in `index.html` — identical in both enviro
 
 **In the test portal:** Rates tab → edit one rate → Save, with the Network panel open as above.
 
+**Captured 2026-08-18, from the TEST portal.** The call count, function list and overlap check
+were **not captured** — the Network panel wasn't read in that detail — and are left blank
+rather than guessed. One useful side observation: the save added **two rows to `Audit_Log`**,
+consistent with the expected pattern of logging both the closed-off old period and the new one.
+
 | Measure | Value | Valid for production? |
 |---|---|---|
-| Number of `google.script.run` calls fired | | **yes** — client-side, environment-independent |
-| Which functions, in order | | **yes** — same |
-| Do any two overlap? | | **yes** — same |
-| Largest single response | ____ KB | **yes** — test reads the production spreadsheet |
-| Save click to "Saved" indicator | ____ s | **no** — upper bound only, inflated on its read portion by ~6 × |
+| Number of `google.script.run` calls fired | not captured | **yes** — client-side, environment-independent |
+| Which functions, in order | not captured | **yes** — same |
+| Do any two overlap? | not captured | **yes** — same |
+| Largest single response | not captured | **yes** — test reads the production spreadsheet |
+| Save click to "Saved" indicator | **~10 s (test)** | **no** — upper bound only, inflated on its read portion by ~6 × |
+| `Audit_Log` rows added per save | **2** | **yes** — client/write behaviour, environment-independent |
 
-P2 predicts three round-trips, one of which re-reads every tab. Record what actually happened.
+P2 predicts three round-trips, one of which re-reads every tab. This has not been confirmed
+against the actual Network panel yet.
 
-**Phase 5 verdict** (from the call count, which is the sound figure): ____________________
+**Phase 5 verdict:** **Not yet decided — the call count is the deciding figure and it hasn't
+been captured.** Re-open the Network panel during a test save and count the `google.script.run`
+entries before starting Phase 5.
 
 #### Derived production save wall-clock
 
 `DERIVED — not measured.` Computed, not observed. Do not quote it as a measurement.
+
+**Cannot be computed yet** — it depends on the call list above, which was not captured. Fill in
+once the call count and function list are recorded.
 
 Method: from the call list above, sum production's cost for whichever calls the save fires, using
 this file's production `testApiPayload()` figures:
