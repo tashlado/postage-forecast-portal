@@ -107,6 +107,14 @@ input.bad{border-color:var(--err);background:#FFF6F7}
 .modal h3{margin:0;padding:16px 20px 14px;font-size:16px;font-weight:500;
           border-bottom:1px solid var(--line)}
 .modal .intro{margin:0;padding:12px 20px 0;font-size:13px;color:var(--ink-3)}
+.modal .fbody{padding:12px 20px 0;font-size:13px;max-height:46vh;overflow:auto}
+.modal .fbody table{width:100%;border-collapse:collapse;margin:8px 0 2px}
+.modal .fbody th,.modal .fbody td{padding:4px 6px;border-bottom:1px solid var(--line);
+       font-size:12px;text-align:left}
+.modal .fbody th{color:var(--ink-3);font-weight:500}
+.modal .fbody td.right,.modal .fbody th.right{text-align:right}
+.modal .fbody .warn{margin-top:8px;padding:8px 10px;border-radius:8px;
+       background:#FFF6E5;border:1px solid #F2DDB0;color:#7A5A12;font-size:12px}
 .modal .fields{padding:16px 20px 4px;display:flex;flex-direction:column;gap:14px}
 .modal .fields .field label{font-size:12px;color:var(--ink-2)}
 .modal .hint{font-size:11px;color:var(--ink-3);margin-top:2px}
@@ -243,10 +251,15 @@ function closeForm(){
 }
 
 /**
- * cfg = { title, intro, saveLabel, fields:[...], onSave(values, done, fail) }
+ * cfg = { title, intro, body, saveLabel, fields:[...], onSave(values, done, fail) }
  * field = { key, label, type, value, options, hint, required, min, max, step,
  *           suffix, placeholder, openEnded }
  *   type: text | number | date | select | month
+ *
+ * cfg.body is a block of markup shown above the fields, for a confirmation step
+ * that has something to show rather than something to fill in — a table of what
+ * a bulk change would do, say. Like cfg.intro and field.hint it is injected as
+ * raw HTML, so every value interpolated into it must go through esc().
  */
 function openForm(cfg){
   closeForm();
@@ -256,6 +269,7 @@ function openForm(cfg){
   var h='<div class="modal" role="dialog" aria-modal="true">';
   h+='<h3>'+esc(cfg.title)+'</h3>';
   if(cfg.intro) h+='<p class="intro">'+cfg.intro+'</p>';
+  if(cfg.body) h+='<div class="fbody">'+cfg.body+'</div>';
   h+='<div class="merr" id="mErr" style="display:none"></div>';
   h+='<div class="fields">';
 
@@ -499,7 +513,8 @@ function viewRates(){
   var base=S.rateBase.filter(function(r){return r.modellingId===mid;})
            .sort(function(a,b){return a.validFrom<b.validFrom?-1:1;});
   h+='<div class="card"><h2>Base rate'+
-     (canEdit?'<button class="btn sm primary" id="addBase" style="float:right;margin-top:-3px">Add rate change</button>':'')+
+     (canEdit?'<button class="btn sm primary" id="addBase" style="float:right;margin-top:-3px">Add rate change</button>'+
+              '<button class="btn sm" id="bulkBase" style="float:right;margin:-3px 6px 0 0">Bulk update…</button>':'')+
      '</h2><div class="body" style="padding:0">';
   h+='<table><thead><tr><th>From</th><th>To</th><th class="right">Rate</th><th>Source</th><th></th></tr></thead><tbody>';
   if(!base.length) h+='<tr><td colspan="5" class="empty">No base rate. This route prices at zero.</td></tr>';
@@ -516,7 +531,8 @@ function viewRates(){
   var sur=S.rateSurcharge.filter(function(r){return r.modellingId===mid;})
           .sort(function(a,b){return (a.code+a.validFrom)<(b.code+b.validFrom)?-1:1;});
   h+='<div class="card"><h2>Surcharges'+
-     (canEdit?'<button class="btn sm primary" id="addSur" style="float:right;margin-top:-3px">Add surcharge</button>':'')+
+     (canEdit?'<button class="btn sm primary" id="addSur" style="float:right;margin-top:-3px">Add surcharge</button>'+
+              '<button class="btn sm" id="bulkSur" style="float:right;margin:-3px 6px 0 0">Bulk update…</button>':'')+
      '</h2><div class="body" style="padding:0">';
   h+='<table><thead><tr><th>Type</th><th>From</th><th>To</th><th class="right">Value</th><th></th></tr></thead><tbody>';
   if(!sur.length) h+='<tr><td colspan="5" class="empty">No surcharges on this route.</td></tr>';
@@ -545,6 +561,10 @@ function wireRates(){
   if(add) add.onclick=function(){ editBase(null); };
   var addS=document.getElementById('addSur');
   if(addS) addS.onclick=function(){ editSurcharge(null); };
+  var bb=document.getElementById('bulkBase');
+  if(bb) bb.onclick=function(){ bulkRateForm('BASE'); };
+  var bs=document.getElementById('bulkSur');
+  if(bs) bs.onclick=function(){ bulkRateForm('SURCHARGE'); };
   Array.prototype.forEach.call(document.querySelectorAll('[data-eb]'),function(b){
     b.onclick=function(){ editBase(Number(b.getAttribute('data-eb'))); };});
   Array.prototype.forEach.call(document.querySelectorAll('[data-db]'),function(b){
@@ -650,6 +670,159 @@ function editSurcharge(id){
 function delSurcharge(id){
   if(!confirm('Delete this surcharge?')) return;
   call('deleteSurchargeRate',[id],function(){ showOk('Surcharge deleted.'); reloadData(); });
+}
+
+/* ---- bulk update across dimensions ----
+   The two selects at the top of this screen pick one route. This picks a set of
+   them: name a value for any dimension, or leave it as All. The change lands on
+   every existing rate that matches, as a new period, exactly as "Add rate change"
+   does for one route.
+
+   Two steps, always: the first call previews and writes nothing, and applying
+   sends back the planKey the preview issued so a confirmation can only ever apply
+   the set that was actually shown. */
+
+var BULK_DIMENSIONS = [
+  { key:'brand',         label:'Brand',          ref:'BRAND' },
+  { key:'geo',           label:'Country',        ref:'GEO' },
+  { key:'treatmentType', label:'Treatment type', ref:'TREATMENT_TYPE' },
+  { key:'wlSplit',       label:'WL split',       ref:'WL_SPLIT' },
+  { key:'carrier',       label:'Courier group',  src:'carriers' },
+  { key:'method',        label:'Method',         src:'methods' },
+  { key:'letterParcel',  label:'Class',          ref:'LETTER_PARCEL' }
+];
+
+/* All is the empty value, never a magic string — a brand or carrier code called
+   ALL is one data operation away, and a wildcard a data entry can impersonate is
+   a wildcard waiting to widen somebody's rate change. */
+function bulkDimOptions(d){
+  var opts=[{ value:'', label:'All' }];
+  if(d.src==='carriers') S.carriers.forEach(function(c){
+    opts.push({ value:c.code, label:c.name+' ('+c.code+')' }); });
+  else if(d.src==='methods') S.methods.forEach(function(m){
+    opts.push({ value:m.code, label:m.name+' ('+m.code+')' }); });
+  else optsRef(d.ref).forEach(function(o){ opts.push(o); });
+  return opts;
+}
+
+function bulkRateForm(kind, keep){
+  var isSur = kind==='SURCHARGE';
+  var prior = keep||{};
+  var fields=[];
+
+  if(isSur) fields.push({ key:'surchargeCode', label:'Surcharge type', type:'select',
+    required:true, value:prior.surchargeCode||(S.surchargeTypes[0]&&S.surchargeTypes[0].code),
+    options:S.surchargeTypes.map(function(s){
+      return { value:s.code, label:s.name+' — '+(s.valueType==='PCT'?'percentage of base':'fixed amount') }; }),
+    hint:'One type at a time. There is no All here, because a percentage and a '+
+         'fixed amount cannot share one value.' });
+
+  BULK_DIMENSIONS.forEach(function(d,i){
+    fields.push({ key:d.key, label:d.label, type:'select', value:prior[d.key]||'',
+      options:bulkDimOptions(d),
+      hint:i===0?'Leave a dimension as All to change every value of it.':'' });
+  });
+
+  fields.push({ key:'validFrom', label:'Effective from', type:'date', required:true,
+    value:prior.validFrom||todayOrHorizon(),
+    hint:'Whatever period is running on each matching route is shortened to the day before.' });
+  fields.push({ key:'validTo', label:'Until', type:'date', required:true, openEnded:true,
+    value:prior.validTo||'9999-12-31' });
+  fields.push({ key:'value', label:isSur?'New value':'New rate per parcel', type:'number',
+    step:'0.0001', required:true, value:prior.value===undefined?'':prior.value,
+    placeholder:isSur?'0.1650':'3.7800',
+    hint:isSur?'Percentages go in as a fraction: 0.14 for 14%.':'' });
+  fields.push({ key:'sourceRef', label:'Where it came from', type:'text',
+    value:prior.sourceRef||'', placeholder:'RM 2026 tariff, p.4',
+    hint:'Written to every row this changes, alongside the batch reference.' });
+
+  openForm({
+    title: isSur?'Bulk update surcharges':'Bulk update base rates',
+    intro: 'Every existing rate matching the dimensions you name is superseded by '+
+           'a new period. Nothing is written until you confirm the preview.',
+    saveLabel: 'Preview',
+    fields: fields,
+    onSave: function(v, done, fail){
+      var dims={};
+      BULK_DIMENSIONS.forEach(function(d){ dims[d.key]=v[d.key]||''; });
+      var req={ kind:kind, surchargeCode:isSur?v.surchargeCode:'', dimensions:dims,
+                validFrom:v.validFrom, validTo:v.validTo, value:Number(v.value),
+                sourceRef:v.sourceRef, scenarioId:1, preview:true };
+      call('bulkUpdateRates',[req],function(pv){
+        done();
+        bulkRateConfirm(kind, req, pv, v);
+      }, fail);
+    }
+  });
+}
+
+function bulkRateConfirm(kind, req, pv, raw){
+  var isSur = kind==='SURCHARGE';
+  var unit = function(n){ return isSur ? String(n) : money(n); };
+
+  if(!pv.count){
+    openForm({
+      title:'Nothing matches',
+      intro:'That selection matches no existing '+(isSur?'surcharge':'base rate')+' to supersede.',
+      body:'<table><tbody>'+
+           '<tr><td>Routes matching the dimensions</td><td class="right num">'+pv.routesMatched+'</td></tr>'+
+           '<tr><td>…with no rate to supersede</td><td class="right num">'+pv.skippedNoRate+'</td></tr>'+
+           '<tr><td>…outside what you can edit</td><td class="right num">'+pv.skippedNoScope+'</td></tr>'+
+           '</tbody></table>'+
+           '<div class="warn">A bulk update only ever changes rates that already exist. '+
+           'It will not create one for a route that has none — that gap is worth seeing '+
+           'on this screen rather than filling in silently.</div>',
+      saveLabel:'Change the selection',
+      fields:[],
+      onSave:function(v, done){ done(); bulkRateForm(kind, raw); }
+    });
+    return;
+  }
+
+  var rowsWord = pv.count===1 ? '1 rate' : pv.count+' rates';
+  var b='<table><tbody>'+
+        '<tr><td>Rates to be superseded</td><td class="right num"><strong>'+pv.count+'</strong></td></tr>'+
+        '<tr><td>New value on every one</td><td class="right num"><strong>'+esc(unit(pv.value))+'</strong></td></tr>'+
+        '<tr><td>Effective</td><td class="right num">'+esc(pv.validFrom)+
+        (pv.validTo>='9999-01-01'?' onwards':' to '+esc(pv.validTo))+'</td></tr>'+
+        '</tbody></table>';
+
+  b+='<table><thead><tr><th>Current value</th><th class="right">Rates at it</th></tr></thead><tbody>';
+  pv.distinct.forEach(function(d){
+    b+='<tr><td class="num">'+esc(unit(d.value))+'</td><td class="right num">'+d.rows+'</td></tr>';
+  });
+  b+='</tbody></table>';
+
+  if(pv.distinct.length>1){
+    b+='<div class="warn">These rates are not all the same today. Applying this flattens '+
+       esc(String(pv.distinct.length))+' different values to one. If that is not what you '+
+       'meant, narrow the selection.</div>';
+  }
+  if(pv.skippedNoRate||pv.skippedNoScope){
+    b+='<div class="warn">Also matching the dimensions but left alone: '+
+       pv.skippedNoRate+' route(s) with no rate to supersede'+
+       (pv.skippedNoScope?', '+pv.skippedNoScope+' outside what you can edit':'')+'.</div>';
+  }
+  b+='<div class="hint" style="margin-top:8px">Selection — '+esc(pv.selection)+'</div>';
+
+  openForm({
+    title:'Apply to '+rowsWord+'?',
+    intro:'This is real pricing data. Read the numbers below before confirming.',
+    body:b,
+    saveLabel:'Apply to '+rowsWord,
+    fields:[],
+    onSave:function(v, done, fail){
+      var apply={};
+      for(var k in req) if(req.hasOwnProperty(k)) apply[k]=req[k];
+      apply.preview=false; apply.planKey=pv.planKey;
+      call('bulkUpdateRates',[apply],function(res){
+        done();
+        showOk(res.written+' rate(s) updated as batch '+res.batchRef+
+               ' — '+res.rowsClosed+' period(s) closed, '+res.rowsCreated+' created.');
+        reloadData();
+      }, fail);
+    }
+  });
 }
 
 function reloadData(){
@@ -2290,19 +2463,24 @@ function viewAuditLog(){
   if(!S.recentAudit.length) h+='<div class="empty">Nothing recorded yet.</div>';
   else{
     h+='<table><thead><tr><th>When</th><th>Who</th><th>Action</th><th>What</th>'+
-       '<th>Field</th><th>From</th><th>To</th></tr></thead><tbody>';
+       '<th>Field</th><th>From</th><th>To</th><th>Batch</th></tr></thead><tbody>';
     S.recentAudit.forEach(function(a){
+      /* Rows written by one bulk action all carry its reference in Detail, so a
+         change made to fifty routes at once reads as one thing somebody did. */
+      var batch=/^BULK-/.test(a.detail||'')?String(a.detail).split(' ')[0]:'';
       h+='<tr'+(a.success?'':' style="opacity:.6"')+'><td class="small num">'+esc(a.ts)+'</td>'+
          '<td class="small">'+esc(a.email)+'</td>'+
          '<td class="small">'+esc(a.action)+'</td>'+
          '<td class="small">'+esc(a.entity)+' '+esc(a.entityId)+'</td>'+
          '<td class="small muted">'+esc(a.field)+'</td>'+
          '<td class="small num">'+esc(a.oldValue)+'</td>'+
-         '<td class="small num">'+esc(a.newValue||a.detail)+'</td></tr>';
+         '<td class="small num">'+esc(a.newValue||(batch?'':a.detail))+'</td>'+
+         '<td class="small muted num">'+(batch?'<span class="pill">'+esc(batch)+'</span>':'')+'</td></tr>';
     });
     h+='</tbody></table>';
     h+='<div class="small muted" style="padding:8px 12px">Faded rows are attempts that were '+
-       'refused. Snapshots say what the forecast did; this says what somebody changed.</div>';
+       'refused. Rows sharing a batch reference were one bulk update, not separate edits. '+
+       'Snapshots say what the forecast did; this says what somebody changed.</div>';
   }
   h+='</div></div>';
   return h;

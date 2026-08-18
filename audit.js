@@ -208,9 +208,14 @@ function summariseRow_(row, headers) {
  *
  * @param {string} tableKey  e.g. 'MIX_METHOD'
  * @param {Array}  items     [{ id, before, after, type }]
+ * @param {string} [detail]  stamped on every Audit_Log row this writes. Pass the
+ *                           batch reference for a bulk action, so the History
+ *                           screen can show fifty rows as one thing somebody did
+ *                           rather than fifty coincidental edits.
  */
-function recordChangesBatch_(tableKey, items) {
+function recordChangesBatch_(tableKey, items, detail) {
   if (!items || !items.length) return 0;
+  const detailText = truncate_(detail || '');
 
   const srcHeaders = TABLES[tableKey].headers;
   const sheetName  = TABLES[tableKey].sheet;
@@ -263,6 +268,7 @@ function recordChangesBatch_(tableKey, items) {
           row[C.Action] = 'UPDATE'; row[C.Entity] = sheetName;
           row[C.Entity_ID] = String(it.id); row[C.Field] = h;
           row[C.Old_Value] = truncate_(a); row[C.New_Value] = truncate_(b);
+          row[C.Detail] = detailText;
           row[C.Success] = true;
           rows.push(row);
         }
@@ -273,6 +279,7 @@ function recordChangesBatch_(tableKey, items) {
         row[C.Entity_ID] = String(it.id);
         if (it.type === 'DELETE') row[C.Old_Value] = summariseRow_(it.before, srcHeaders);
         else                      row[C.New_Value] = summariseRow_(it.after, srcHeaders);
+        row[C.Detail] = detailText;
         row[C.Success] = true;
         rows.push(row);
       }
