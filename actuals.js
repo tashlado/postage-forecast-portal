@@ -53,6 +53,12 @@ function saveActual(p) {
   return withLock_(function () {
     invalidateSheetCache_(t.sheet);
 
+    // The segment the row belongs to now, not only the one it is being pointed
+    // at. Only bites when an id was supplied: the match-on-month path below
+    // finds a row for hlId, which is already authorised.
+    assertCanEditRowOwner_(perms, t.sheet, C.Actual_ID, p.id,
+                           C.High_Level_ID, 'HIGH_LEVEL_ID');
+
     // one row per segment per month — a second would silently double count
     const data = getAllData_(t.sheet);
     const wantId = safeInt(p.id);

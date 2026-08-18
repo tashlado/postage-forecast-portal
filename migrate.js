@@ -736,12 +736,19 @@ function addMissingCurrencies_(codes) {
 }
 
 
-/** Minimal audit writer, so migration is recorded like any other change. */
+/**
+ * Minimal audit writer, so migration is recorded like any other change.
+ *
+ * Log_ID comes from nextAuditId_() rather than the sheet's maximum: a second
+ * allocator reading max + 1 would hand back an ID the shared counter has
+ * already issued. (This function duplicates logAudit_ — see FINDINGS M7 — and
+ * should be deleted rather than maintained.)
+ */
 function logAction_(action, entity, entityId, detail) {
   try {
     const sh = getSheet_(SHEET.AUDIT_LOG), C = COL.AUDIT_LOG;
     const row = blankRow_('AUDIT_LOG');
-    row[C.Log_ID]    = getNextId_(SHEET.AUDIT_LOG, C.Log_ID);
+    row[C.Log_ID]    = nextAuditId_();
     row[C.TS]        = new Date();
     row[C.Email]     = (Session.getActiveUser && Session.getActiveUser().getEmail()) || 'migration';
     row[C.Action]    = action;

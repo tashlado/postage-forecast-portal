@@ -169,6 +169,12 @@ function saveModellingId(p) {
 
   return withLock_(function () {
     invalidateSheetCache_(t.sheet);
+
+    // The segment the route sits under now, not only the one it is being moved
+    // to — re-parenting a route is exactly the move this has to refuse.
+    assertCanEditRowOwner_(perms, t.sheet, C.Modelling_ID, p.id,
+                           C.High_Level_ID, 'HIGH_LEVEL_ID');
+
     const data = getAllData_(t.sheet);
     for (let i = 1; i < data.length; i++) {
       if (safeInt(data[i][C.Modelling_ID]) === safeInt(p.id)) continue;

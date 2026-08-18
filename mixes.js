@@ -571,6 +571,12 @@ function saveLetterParcelMix(p) {
 
   return withLock_(function () {
     invalidateSheetCache_(t.sheet);
+
+    // The segment the row belongs to now, not only the one it is being pointed
+    // at — otherwise an editable hlId in the payload authorises any row's id.
+    assertCanEditRowOwner_(perms, t.sheet, C.LP_Mix_ID, p.id,
+                           C.High_Level_ID, 'HIGH_LEVEL_ID');
+
     assertNoOverlap_(t.sheet, C,
       r => safeInt(r[C.High_Level_ID]) === hlId && safeInt(r[C.Scenario_ID]) === scenarioId,
       d.fromKey, d.toKey, p.id, C.LP_Mix_ID, 'High Level ID ' + hlId);

@@ -72,6 +72,23 @@ function saveBaseRate(p) {
   const perms = requirePermissions_();
   requireEditRates_(perms);
 
+  return withLock_(function () { return writeBaseRate_(p, perms); });
+}
+
+/**
+ * One base rate written, assuming the caller already holds the script lock.
+ *
+ * Split out of saveBaseRate so bulkRateChange can write inside its own lock
+ * instead of calling saveBaseRate and having saveBaseRate's finally-block hand
+ * the lock back after the first route — which left every route after the first
+ * running unprotected. Anything that needs a lock of its own calls
+ * saveBaseRate; anything already holding one calls this.
+ *
+ * The order here matters and is the order the periods logic was written for:
+ * authorise, then close the preceding period, then refuse an overlap, then
+ * write. Do not reorder those three.
+ */
+function writeBaseRate_(p, perms) {
   const modellingId = safeInt(p.modellingId);
   assertCanEditModellingId_(perms, modellingId);
 
@@ -82,50 +99,53 @@ function saveBaseRate(p) {
   const t = TABLES.RATE_BASE, C = COL.RATE_BASE, width = t.headers.length;
   const isNew = !safeInt(p.id);
 
-  return withLock_(function () {
-    invalidateSheetCache_(t.sheet);
+  invalidateSheetCache_(t.sheet);
 
-    if (p.closePrevious) closePrecedingPeriod_(t.sheet, C, C.Rate_ID,
-      r => safeInt(r[C.Modelling_ID]) === modellingId, d.from, perms, 'RATE_BASE');
+  // The row's current owner, not just the one being asked for — before any
+  // period is closed, so a refusal leaves nothing half-changed behind it.
+  assertCanEditRowOwner_(perms, t.sheet, C.Rate_ID, p.id,
+                         C.Modelling_ID, 'MODELLING_ID');
 
-    invalidateSheetCache_(t.sheet);
-    assertNoOverlap_(t.sheet, C, r => safeInt(r[C.Modelling_ID]) === modellingId,
-                     d.fromKey, d.toKey, p.id, C.Rate_ID, 'Modelling ID ' + modellingId);
+  if (p.closePrevious) closePrecedingPeriod_(t.sheet, C, C.Rate_ID,
+    r => safeInt(r[C.Modelling_ID]) === modellingId, d.from, perms, 'RATE_BASE');
 
-    const sh = getSheet_(t.sheet);
-    let rowIndex, before = null, row;
+  invalidateSheetCache_(t.sheet);
+  assertNoOverlap_(t.sheet, C, r => safeInt(r[C.Modelling_ID]) === modellingId,
+                   d.fromKey, d.toKey, p.id, C.Rate_ID, 'Modelling ID ' + modellingId);
 
-    if (isNew) {
-      row = blankRow_('RATE_BASE');
-      row[C.Rate_ID]     = getNextId_(t.sheet, C.Rate_ID);
-      row[C.Created_TS]  = new Date();
-      row[C.Created_By]  = perms.email;
-      rowIndex = sh.getLastRow() + 1;
-    } else {
-      rowIndex = findRowById_(t.sheet, C.Rate_ID, p.id);
-      if (rowIndex < 0) throw new Error('That rate no longer exists — someone may have deleted it.');
-      before = readRow_(t.sheet, rowIndex, width);
-      row = before.slice();
-    }
+  const sh = getSheet_(t.sheet);
+  let rowIndex, before = null, row;
 
-    row[C.Modelling_ID] = modellingId;
-    row[C.Valid_From]   = d.from;
-    row[C.Valid_To]     = d.to;
-    row[C.Base_Rate]    = value;
-    row[C.Currency]     = safeStr(p.currency) || currencyForModellingId_(modellingId);
-    row[C.Scenario_ID]  = safeInt(p.scenarioId) || 1;
-    row[C.Source_Ref]   = safeStr(p.sourceRef);
-    row[C.Notes]        = safeStr(p.notes);
-    row[C.Active]       = true;
-    row[C.Updated_TS]   = new Date();
-    row[C.Updated_By]   = perms.email;
+  if (isNew) {
+    row = blankRow_('RATE_BASE');
+    row[C.Rate_ID]     = getNextId_(t.sheet, C.Rate_ID);
+    row[C.Created_TS]  = new Date();
+    row[C.Created_By]  = perms.email;
+    rowIndex = sh.getLastRow() + 1;
+  } else {
+    rowIndex = findRowById_(t.sheet, C.Rate_ID, p.id);
+    if (rowIndex < 0) throw new Error('That rate no longer exists — someone may have deleted it.');
+    before = readRow_(t.sheet, rowIndex, width);
+    row = before.slice();
+  }
 
-    sh.getRange(rowIndex, 1, 1, width).setValues([row]);
-    invalidateSheetCache_(t.sheet);
+  row[C.Modelling_ID] = modellingId;
+  row[C.Valid_From]   = d.from;
+  row[C.Valid_To]     = d.to;
+  row[C.Base_Rate]    = value;
+  row[C.Currency]     = safeStr(p.currency) || currencyForModellingId_(modellingId);
+  row[C.Scenario_ID]  = safeInt(p.scenarioId) || 1;
+  row[C.Source_Ref]   = safeStr(p.sourceRef);
+  row[C.Notes]        = safeStr(p.notes);
+  row[C.Active]       = true;
+  row[C.Updated_TS]   = new Date();
+  row[C.Updated_By]   = perms.email;
 
-    recordChange_('RATE_BASE', row[C.Rate_ID], before, row, isNew ? 'CREATE' : 'UPDATE');
-    return { ok: true, id: row[C.Rate_ID], isNew: isNew };
-  });
+  sh.getRange(rowIndex, 1, 1, width).setValues([row]);
+  invalidateSheetCache_(t.sheet);
+
+  recordChange_('RATE_BASE', row[C.Rate_ID], before, row, isNew ? 'CREATE' : 'UPDATE');
+  return { ok: true, id: row[C.Rate_ID], isNew: isNew };
 }
 
 
@@ -186,6 +206,11 @@ function saveSurchargeRate(p) {
 
   return withLock_(function () {
     invalidateSheetCache_(t.sheet);
+
+    // The row's current owner, not just the one being asked for — before any
+    // period is closed, so a refusal leaves nothing half-changed behind it.
+    assertCanEditRowOwner_(perms, t.sheet, C.Surcharge_Rate_ID, p.id,
+                           C.Modelling_ID, 'MODELLING_ID');
 
     if (p.closePrevious) closePrecedingPeriod_(t.sheet, C, C.Surcharge_Rate_ID,
       r => safeInt(r[C.Modelling_ID]) === modellingId &&
@@ -449,17 +474,20 @@ function bulkRateChange(p) {
   }
 
   // ---- write --------------------------------------------------------------
+  // writeBaseRate_, not saveBaseRate: saveBaseRate takes the lock itself and
+  // releases it in a finally-block, so calling it from inside this lock freed
+  // the lock after the first route and left the rest of the batch unprotected.
   return withLock_(function () {
     let written = 0;
     plan.forEach(item => {
-      saveBaseRate({
+      writeBaseRate_({
         modellingId: item.modellingId,
         validFrom: fmtDate(d.from), validTo: fmtDate(d.to),
         value: item.to, scenarioId: scenarioId,
         sourceRef: safeStr(p.sourceRef) || 'Bulk change',
         notes: 'Bulk: ' + p.changeType + ' ' + p.changeValue,
         closePrevious: true
-      });
+      }, perms);
       written++;
     });
     logAudit_('UPDATE', 'BULK_RATE_CHANGE', p.scope + ':' + (p.scopeValue || ''),

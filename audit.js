@@ -19,6 +19,56 @@
 // AUDIT LOG
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ---- Log_ID allocation ------------------------------------------------------
+//
+// Log_ID used to be max(existing) + 1 read from the sheet and then appended,
+// which races: the DENIED path in auth.gs logs outside any lock, so two
+// executions refused at the same moment read the same maximum and both wrote
+// it. Taking the script lock here would fix that and cause worse: logAudit_ is
+// called from inside write paths that already hold it, and the inner
+// releaseLock() would hand the lock back mid-write — the same defect that made
+// bulkRateChange unsafe. So the counter lives in a Script Property instead,
+// which narrows the window to the microseconds between one small read and one
+// small write, and never queues a refused call behind a real one.
+//
+// Seeded from the sheet's current maximum the first time it is used, so IDs
+// carry on from where the sheet left off rather than restarting at 1, and keyed
+// by spreadsheet ID because the target spreadsheet is switchable (see
+// spreadsheetId_) while Script Properties belong to the script project — one
+// shared counter would hand a copy's numbering to the original.
+//
+// IDs are reserved a block at a time so a grid write costs one property
+// round-trip rather than one per row. A block left part-used leaves a gap in the
+// numbering, which is harmless: nothing keys on Log_ID, it only has to be
+// unique and ascending.
+
+let _auditIdNext_ = 0;
+let _auditIdLeft_ = 0;
+
+/** Reserve `count` Log_IDs and return the first. */
+function reserveAuditIds_(count) {
+  const n = Math.max(1, Math.floor(count) || 1);
+  const key = 'AUDIT_LOG_NEXT_ID_' + spreadsheetId_();
+  const props = PropertiesService.getScriptProperties();
+
+  let next = parseInt(props.getProperty(key), 10);
+  if (!(next >= 1)) next = getNextId_(SHEET.AUDIT_LOG, COL.AUDIT_LOG.Log_ID);
+
+  props.setProperty(key, String(next + n));
+  return next;
+}
+
+/** The next Log_ID, taken from the block this execution has reserved. */
+function nextAuditId_() {
+  if (_auditIdLeft_ <= 0) {
+    _auditIdNext_ = reserveAuditIds_(8);
+    _auditIdLeft_ = 8;
+  }
+  _auditIdLeft_--;
+  return _auditIdNext_++;
+}
+
+
 /**
  * Record one action. Never throws — a failure to log must not roll back the
  * work itself, and definitely must not mask the real error.
@@ -27,7 +77,7 @@ function logAudit_(action, entity, entityId, field, oldValue, newValue, detail, 
   try {
     const t = TABLES.AUDIT_LOG, C = COL.AUDIT_LOG;
     const row = blankRow_('AUDIT_LOG');
-    row[C.Log_ID]    = getNextId_(SHEET.AUDIT_LOG, C.Log_ID);
+    row[C.Log_ID]    = nextAuditId_();
     row[C.TS]        = new Date();
     row[C.Email]     = getActiveEmail_() || 'system';
     row[C.Action]    = action;
@@ -199,7 +249,6 @@ function recordChangesBatch_(tableKey, items) {
   try {
     const C = COL.AUDIT_LOG;
     const auditSheet = getSheet_(SHEET.AUDIT_LOG);
-    let nextLog = getNextId_(SHEET.AUDIT_LOG, C.Log_ID);
     const rows = [];
 
     items.forEach(it => {
@@ -210,7 +259,7 @@ function recordChangesBatch_(tableKey, items) {
           const a = displayValue_(it.before[i]), b = displayValue_(it.after[i]);
           if (a === b) continue;
           const row = blankRow_('AUDIT_LOG');
-          row[C.Log_ID] = nextLog++; row[C.TS] = now; row[C.Email] = email;
+          row[C.TS] = now; row[C.Email] = email;
           row[C.Action] = 'UPDATE'; row[C.Entity] = sheetName;
           row[C.Entity_ID] = String(it.id); row[C.Field] = h;
           row[C.Old_Value] = truncate_(a); row[C.New_Value] = truncate_(b);
@@ -219,7 +268,7 @@ function recordChangesBatch_(tableKey, items) {
         }
       } else {
         const row = blankRow_('AUDIT_LOG');
-        row[C.Log_ID] = nextLog++; row[C.TS] = now; row[C.Email] = email;
+        row[C.TS] = now; row[C.Email] = email;
         row[C.Action] = it.type; row[C.Entity] = sheetName;
         row[C.Entity_ID] = String(it.id);
         if (it.type === 'DELETE') row[C.Old_Value] = summariseRow_(it.before, srcHeaders);
@@ -230,6 +279,11 @@ function recordChangesBatch_(tableKey, items) {
     });
 
     if (rows.length) {
+      // One reservation for the whole batch, numbered once the row count is
+      // known, so a grid write costs a single property round-trip.
+      let nextLog = reserveAuditIds_(rows.length);
+      rows.forEach(r => { r[C.Log_ID] = nextLog++; });
+
       auditSheet.getRange(auditSheet.getLastRow() + 1, 1, rows.length,
                           TABLES.AUDIT_LOG.headers.length).setValues(rows);
       invalidateSheetCache_(SHEET.AUDIT_LOG);
@@ -320,6 +374,21 @@ function readRecentAudit_(limit) {
       detail:   safeStr(data[i][C.Detail]),
       success:  safeBool(data[i][C.Success])
     });
+  }
+  return out;
+}
+
+
+/**
+ * Every Log_ID in the tab, in sheet order — so a diagnostic can say whether the
+ * allocation actually is unique and ascending rather than assuming it.
+ */
+function auditLogIds_() {
+  const data = getAllData_(SHEET.AUDIT_LOG), C = COL.AUDIT_LOG;
+  const out = [];
+  for (let i = 1; i < data.length; i++) {
+    const v = safeInt(data[i][C.Log_ID]);
+    if (v) out.push(v);
   }
   return out;
 }
@@ -419,6 +488,35 @@ function testAuditTrail() {
                                 a.entity + ' ' + a.entityId + '  ' + (a.newValue || a.detail)));
 
   Logger.log('');
+  Logger.log('--- Log_ID allocation ---');
+  // Judged on the rows this run just wrote, not on the whole tab: any duplicate
+  // that predates this run came from the old max + 1 allocator, and failing the
+  // test for it would send you looking for a bug that has already been fixed.
+  const ids = auditLogIds_();
+  const added = Math.max(afterAudit - beforeAudit, 0);
+  const priorIds = {}, dupes = {};
+  ids.slice(0, ids.length - added).forEach(v => { priorIds[v] = true; });
+
+  const newIds = ids.slice(ids.length - added);
+  let ascending = true;
+  newIds.forEach((v, i) => {
+    if (priorIds[v]) dupes[v] = true;
+    priorIds[v] = true;
+    if (i > 0 && v <= newIds[i - 1]) ascending = false;
+  });
+  const dupeList = Object.keys(dupes);
+
+  Logger.log('  rows with an ID   : ' + ids.length);
+  Logger.log('  written this run  : ' + added + (newIds.length ? ' (' + newIds.join(', ') + ')' : ''));
+  Logger.log('  counter now at    : ' +
+             (PropertiesService.getScriptProperties()
+                .getProperty('AUDIT_LOG_NEXT_ID_' + spreadsheetId_()) ||
+              '(unset — seeds from the sheet on first write)'));
+  Logger.log('  reused an old ID  : ' + (dupeList.length ? 'YES — ' + dupeList.join(', ') : 'no'));
+  Logger.log('  ascending         : ' + (ascending ? 'yes' : 'NO — IDs go backwards'));
+  const idsOk = added > 0 && !dupeList.length && ascending;
+
+  Logger.log('');
   const perms = getUserPermissions_();
   if (!perms.found) {
     Logger.log('--- note ---');
@@ -427,9 +525,12 @@ function testAuditTrail() {
     Logger.log('  mechanism. Add your row before Step 7 — see Part D.');
     Logger.log('');
   }
-  const ok = (afterAudit > beforeAudit) && (afterAmends > beforeAmends) && hist.length > 0;
+  const writesOk = (afterAudit > beforeAudit) && (afterAmends > beforeAmends) && hist.length > 0;
+  const ok = writesOk && idsOk;
   Logger.log(ok ? 'AUDIT TRAIL WORKING'
-                : 'PROBLEM — one of the writes did not land. Send me this log.');
+                : (writesOk
+                    ? 'PROBLEM — Log_ID allocation is not unique and ascending. Send me this log.'
+                    : 'PROBLEM — one of the writes did not land. Send me this log.'));
   Logger.log('');
   Logger.log('Two test rows were left behind on purpose so you can look at them:');
   Logger.log('  Audit_Log        — a CREATE entry for Rate_Base 999999');

@@ -266,6 +266,45 @@ function assertCanEditModellingId_(perms, modellingId) {
   throw new Error('Modelling ID ' + modellingId + ' is outside the area you can edit.');
 }
 
+/**
+ * Authorise an update against the row as it stands, not only against the
+ * payload — the fix for the "re-parent a row you cannot see" hole.
+ *
+ * A save carries the foreign key the caller wants the row to end up with.
+ * Checking only that key authorises the destination and never the source, so a
+ * caller who may edit segment B can send { id: <a row in segment A>, hlId: B }
+ * and quietly move a row they were never allowed to touch. Every update path
+ * must therefore also authorise the owner already on the row, which is what the
+ * delete paths have always done by reading the row before asserting.
+ *
+ * A no-op for a create — there is no existing row to own. Reads through the
+ * execution cache, so inside a write that was going to scan the table anyway it
+ * costs nothing. A missing row is left alone: the caller's own "no longer
+ * exists" error says something more useful than a scope refusal would.
+ *
+ * @param {Object} perms          from requirePermissions_()
+ * @param {string} sheetName      the tab holding the row being updated
+ * @param {number} idColIndex     0-based index of that table's ID column
+ * @param {*}      id             ID from the payload; falsy means create
+ * @param {number} ownerColIndex  0-based index of High_Level_ID or Modelling_ID
+ * @param {string} ownerKind      'HIGH_LEVEL_ID' or 'MODELLING_ID'
+ */
+function assertCanEditRowOwner_(perms, sheetName, idColIndex, id,
+                                ownerColIndex, ownerKind) {
+  const want = safeInt(id);
+  if (!want) return true;
+
+  const data = getAllData_(sheetName);
+  for (let i = 1; i < data.length; i++) {
+    if (safeInt(data[i][idColIndex]) !== want) continue;
+    const owner = safeInt(data[i][ownerColIndex]);
+    return (ownerKind === 'MODELLING_ID')
+      ? assertCanEditModellingId_(perms, owner)
+      : assertCanEditHighLevelId_(perms, owner);
+  }
+  return true;
+}
+
 function assertCanSeeModellingId_(perms, modellingId) {
   if (canSeeModellingId_(perms, modellingId, false)) return true;
   logAudit_('DENIED', 'MODELLING_ID', modellingId, '', '', '', 'view outside scope', false);
