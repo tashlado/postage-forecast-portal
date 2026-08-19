@@ -29,6 +29,11 @@ a{color:var(--brand)}
 header{background:var(--surface);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:20}
 .hrow{display:flex;align-items:center;gap:20px;padding:10px 20px;max-width:1400px;margin:0 auto}
 .logo{height:22px;width:auto;display:block}
+/* Beside the logo, on its baseline — not stacked. Reuses the active nav tab's
+   13px/500 and --ink rather than introducing a title style, and sits inside
+   .hlogo so the flex gap between logo and name is tighter than the header's. */
+.hlogo{display:flex;align-items:center;gap:9px}
+.hlogo .pname{font-size:13px;font-weight:500;color:var(--ink);white-space:nowrap}
 nav{display:flex;gap:2px;flex:1;overflow-x:auto}
 nav button{padding:7px 11px;font-size:13px;color:var(--ink-3);border-radius:6px 6px 0 0;white-space:nowrap}
 nav button:hover{color:var(--ink);background:var(--bg)}
@@ -124,7 +129,10 @@ input.bad{border-color:var(--err);background:#FFF6F7}
 
 <header>
   <div class="hrow">
-    <img class="logo" alt="HeliosX" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAG4AAAAoCAYAAAAfWs+KAAAEMUlEQVR42u1bQWvUQBT+IvsrCoI9SA9LCWivFby5Qjz06EEoePEgDcVDf0ARD4s0CHqwUOjBY6AWusfSeg8GUfBkQfBP7EI8bLKdHd7MvOzMZhOYBwOdTiYzmW/el/e+zAbw1lIrekLlndR45den9cAVQ6AYS6Xv16fdoPUJ0CK/Pq0FbVZyCbQzgka9dYAiBVC9dYUiX3tvWwntWVFk7j2tPSG+ytteq6NID1yTtMfwlDlvk0EbUqD1AGRC/QbAjmFGCYBtob4LIHf4xCGAE6H+DcAeo61FgAUTAK+A4qXwfwB4eFsPJvP9gslt1DizXwAOVMCPpWKyVLp+4PjJQ+n+qaYta3k4z/CemWdGdSjyjqc011Z5UjAh2GtvCkYwmafQoidt0JLZgp+CB0Omyi5ZDuCjUP/TXvCKHhCcA8UFgKdC4xegkCiz8sQ5OzC9G7tElV1VQBSUqaTIyBRFLpsqB+XCZ8I7KbUEOylLCiA2bIBEGLsaPynbOBYT/U3jUpS5T1Nm0QNwKLVdlJ5KUmQTHpcS9+Z4Up3gJNWAOzaUxLDhTP2zml6XEwm1lay1DOBSxoOrHt4WuIQ5tg68scX8OTJW34WsNSaA0JXMAFxMLG4oLHxqWDwb4Kh0YSB5kmn+iWb+A8V6ccEbCimBtfI/tizyxDPGjsw0Xm4DnLwpQsYz172HvDHjepTpRtZyHZyEADaF+qniulPineLCxI+M5xpF51zRh7I1qX4E4BmArbJc1gtUij6A99IF+7qcjTLXedxjqf4IwDpx3V2pvgFg5GDTcO0vsXGq8a8lML+WQF+XIOWWc31LyFqf6t6EAm7L0OdE8iquB+hs3cGmWXO0+Y4AvJCeMSK8+TMfwMqTikhKxgHg+XTjFrtA8IbrdT2FOqGzmxrAddUelO+6SLMhoxLAHWZgopO1zqaAFlfcHG7ZkldFMSa7dDDWP8dz3ynpdw3AE0y/iGwSACYwfqEglf9K1hK98BAoRvNe2kweN6gfcTnN47hSWcKMPlVqCnPNtMp/pEgLhpzo0nVUOSKCE87CuYoqfwh/39Ncty31yaVUJdOAfySNw6FIhawFADim5bBKqG5OOTG1h4YxbTwuZigjpjwss5w/lXQbZK3iTH3GRA2ea+BChS6ZKKSw2LHklRHqSUIIzqrnjWvOP2HKXISsNSsLyV/L0Co5Iq1q4W2BCxUAUSVcUCDXKEPcA61zVLqQmrKsrwOmBYyZwUmywNcBk9icMgISk1idGCiSCYQJaJougwZyoiqk3hBC/xzN2UAY+3eZNuQL9q/uMdKDhg0A3wlZ6wMd5s8S9J40VjkeTwbztrDZBBv+zOSqQbNQ/udo059cbga0egdavXWeIr2tGrSFTmt5Wz1F+h8hdhC4xn+E6HeDFWiz3Os+gAuh8Vg4zexzsHa/45rNy/4DausdKQEq7hMAAAAASUVORK5CYII=">
+    <div class="hlogo">
+      <img class="logo" alt="HeliosX" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAG4AAAAoCAYAAAAfWs+KAAAEMUlEQVR42u1bQWvUQBT+IvsrCoI9SA9LCWivFby5Qjz06EEoePEgDcVDf0ARD4s0CHqwUOjBY6AWusfSeg8GUfBkQfBP7EI8bLKdHd7MvOzMZhOYBwOdTiYzmW/el/e+zAbw1lIrekLlndR45den9cAVQ6AYS6Xv16fdoPUJ0CK/Pq0FbVZyCbQzgka9dYAiBVC9dYUiX3tvWwntWVFk7j2tPSG+ytteq6NID1yTtMfwlDlvk0EbUqD1AGRC/QbAjmFGCYBtob4LIHf4xCGAE6H+DcAeo61FgAUTAK+A4qXwfwB4eFsPJvP9gslt1DizXwAOVMCPpWKyVLp+4PjJQ+n+qaYta3k4z/CemWdGdSjyjqc011Z5UjAh2GtvCkYwmafQoidt0JLZgp+CB0Omyi5ZDuCjUP/TXvCKHhCcA8UFgKdC4xegkCiz8sQ5OzC9G7tElV1VQBSUqaTIyBRFLpsqB+XCZ8I7KbUEOylLCiA2bIBEGLsaPynbOBYT/U3jUpS5T1Nm0QNwKLVdlJ5KUmQTHpcS9+Z4Up3gJNWAOzaUxLDhTP2zml6XEwm1lay1DOBSxoOrHt4WuIQ5tg68scX8OTJW34WsNSaA0JXMAFxMLG4oLHxqWDwb4Kh0YSB5kmn+iWb+A8V6ccEbCimBtfI/tizyxDPGjsw0Xm4DnLwpQsYz172HvDHjepTpRtZyHZyEADaF+qniulPineLCxI+M5xpF51zRh7I1qX4E4BmArbJc1gtUij6A99IF+7qcjTLXedxjqf4IwDpx3V2pvgFg5GDTcO0vsXGq8a8lML+WQF+XIOWWc31LyFqf6t6EAm7L0OdE8iquB+hs3cGmWXO0+Y4AvJCeMSK8+TMfwMqTikhKxgHg+XTjFrtA8IbrdT2FOqGzmxrAddUelO+6SLMhoxLAHWZgopO1zqaAFlfcHG7ZkldFMSa7dDDWP8dz3ynpdw3AE0y/iGwSACYwfqEglf9K1hK98BAoRvNe2kweN6gfcTnN47hSWcKMPlVqCnPNtMp/pEgLhpzo0nVUOSKCE87CuYoqfwh/39Ncty31yaVUJdOAfySNw6FIhawFADim5bBKqG5OOTG1h4YxbTwuZigjpjwss5w/lXQbZK3iTH3GRA2ea+BChS6ZKKSw2LHklRHqSUIIzqrnjWvOP2HKXISsNSsLyV/L0Co5Iq1q4W2BCxUAUSVcUCDXKEPcA61zVLqQmrKsrwOmBYyZwUmywNcBk9icMgISk1idGCiSCYQJaJougwZyoiqk3hBC/xzN2UAY+3eZNuQL9q/uMdKDhg0A3wlZ6wMd5s8S9J40VjkeTwbztrDZBBv+zOSqQbNQ/udo059cbga0egdavXWeIr2tGrSFTmt5Wz1F+h8hdhC4xn+E6HeDFWiz3Os+gAuh8Vg4zexzsHa/45rNy/4DausdKQEq7hMAAAAASUVORK5CYII=">
+      <span class="pname">Postage Forecast</span>
+    </div>
     <nav id="nav"></nav>
     <div class="hright">
       <span id="saveState"><span class="dot ok"></span>Saved</span>
@@ -157,15 +165,17 @@ var S = {
         chartHl:null,
         chartSeries:{f1:true,f2:true,f3:true,f4:true,a1:true,a2:true,a3:true,a4:true} }
 };
+/* Labels only. The keys are wired to S.screen, viewAdmin/wireAdmin and
+   viewValidation, so 'admin' stays 'admin' however the tab is captioned. */
 var TABS = [
   ['dashboard','Dashboard',null],
   ['rates','Rates','editRates'],
   ['mixes','Mixes','editMixes'],
   ['output','Output',null],
   ['actuals','Actuals',null],
-  ['admin','Admin','editStructure'],
-  ['validation','Checks',null],
-  ['history','History','viewAudit']
+  ['admin','Lookups','editStructure'],
+  ['history','History','viewAudit'],
+  ['validation','Checks',null]
 ];
 
 /* ===================================================================
@@ -879,7 +889,7 @@ function renderLpGrid(){
   if(!g.hasLetterRoutes){
     h+='<div class="body" style="border-top:1px solid var(--line)" class="small muted">'+
        '<div class="small muted">This segment has no letterbox routes, so the split stays at '+
-       '0% letters. Add letterbox routes under Admin if that should change — the letterbox '+
+       '0% letters. Add letterbox routes under Lookups if that should change — the letterbox '+
        'services are separate methods, such as RoyalMailTracked24Letterbox.</div></div>';
   }
   h+='</div></div>';
@@ -1430,15 +1440,16 @@ function wireOutput(){
 }
 
 /* ===================================================================
-   Admin — reference lists, carriers, methods, surcharges, structure
+   Lookups (the admin* functions) — reference lists, carriers, methods,
+   surcharges, structure
    =================================================================== */
 function viewAdmin(){
   if(!S.loaded) return '<div class="card"><div class="body">'+loading()+'</div></div>';
   var sec=S.sel.adminSection||'carriers';
-  var tabs=[['carriers','Carriers & methods'],
+  var tabs=[['carriers','Carriers & Methods'],
             ['structure','High Level & Modelling IDs'],
-            ['surcharges','Surcharge types'],
-            ['lists','Reference lists']];
+            ['surcharges','Surcharge Types'],
+            ['lists','Reference Lists']];
   var h='<div class="card"><div class="body" style="padding:10px 12px">';
   h+='<div style="display:flex;gap:2px;flex-wrap:wrap">'+tabs.map(function(t){
      return '<button class="btn sm'+(sec===t[0]?' primary':'')+'" data-as="'+t[0]+'">'+
@@ -2139,7 +2150,7 @@ var snapDiff=null;
 function viewHistory(){
   if(!S.loaded) return '<div class="card"><div class="body">'+loading()+'</div></div>';
   var sec=S.sel.histSection||'snapshots';
-  var tabs=[['snapshots','Forecast over time'],['audit','Change log']];
+  var tabs=[['snapshots','Forecast Snapshot'],['audit','Change log']];
   var h='<div class="card"><div class="body" style="padding:10px 12px">';
   h+='<div style="display:flex;gap:2px">'+tabs.map(function(t){
      return '<button class="btn sm'+(sec===t[0]?' primary':'')+'" data-hs="'+t[0]+'">'+
