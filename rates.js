@@ -536,18 +536,21 @@ function bulkRateChange(p) {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// BULK UPDATE BY DIMENSION
+// BULK UPDATE BY CHARGE TYPE AND DIMENSION
 //
-// The Rates screen edits one route at a time, which is right for "Royal Mail
-// RM24 letters in GB went up". It is the wrong shape for "the 24-hour letter
-// surcharge went up everywhere", which is one commercial decision spread across
-// dozens of routes and, done by hand, dozens of chances to miss one.
+// The two selects at the top of the Rates screen edit one route at a time, which
+// is right for "Royal Mail RM24 letters in GB went up". It is the wrong shape for
+// "the 24-hour letter fuel surcharge went up everywhere", which is one commercial
+// decision spread across dozens of routes and, done by hand, dozens of chances to
+// miss one.
 //
-// So a change can name a value for each dimension or leave it as All, and the
-// change lands on every EXISTING row that matches. "Existing" is the operative
-// word: this updates rows that are already there, it never creates a rate for a
-// route that had none. A route with no rate is a structural gap that wants
-// noticing on the Rates screen, not filling in silently by a bulk action.
+// A bulk change is therefore two questions. First WHICH CHARGE — the base rate,
+// one named surcharge, or all of them. Then WHICH ROUTES — name a value for any
+// dimension, or leave it as All. The change lands on every EXISTING row that
+// matches. "Existing" is the operative word: this updates rows that are already
+// there, it never creates a rate for a route that had none. A route with no rate
+// is a structural gap that wants noticing on the Rates screen, not filling in
+// silently by a bulk action.
 //
 // THE DIMENSIONS. Neither rate table stores any of them. Both key on
 // Modelling_ID, and every dimension is reached by a two-hop join:
@@ -555,32 +558,45 @@ function bulkRateChange(p) {
 //   Rate_Base / Rate_Surcharge  ->  Modelling_IDs  ->  High_Level_IDs
 //
 //   High_Level_IDs : Brand, Geo, Treatment_Type, WL_Split
-//   Modelling_IDs  : Carrier_Code, Method_Code, Letter_Parcel
-//   Rate_Surcharge : Surcharge_Code   (surcharges only, and never All — see below)
+//   Modelling_IDs  : Method_Code, Letter_Parcel
 //
-// ALL IS NOT A STORED VALUE. It exists only in the selector: an empty string
-// means "do not filter on this dimension". Nothing is written as "All" — every
-// row written is an ordinary row against one concrete Modelling_ID. Note that
-// WL_Split legitimately stores '*' meaning "not applicable" for segments that are
-// not weight-loss; that is a real value to be matched, NOT a wildcard, and
-// conflating the two would silently widen every change.
+// Modelling_IDs.Carrier_Code is deliberately NOT selectable. It is a genuinely
+// separate column — migrated from its own source column, and free to disagree
+// with the owning carrier that Dim_Method records for the method (validation only
+// WARNs, as METHOD_CARRIER) — but it was removed from the selector by request, so
+// a bulk change always spans every carrier. Nothing here reads it, rather than
+// defaulting it, so a hand-built payload cannot narrow by carrier either.
 //
-// SURCHARGE TYPE IS ALWAYS SPECIFIC. FUEL is a percentage and GREEN, PEAK and
-// SHIPSTATION are amounts (Dim_Surcharge.Value_Type), so one entered number
-// cannot mean both a fraction and a currency value. Allowing All there would mean
-// 0.06 landing as 6% on one row and 6 pence on the next.
+// ALL IS NOT A STORED VALUE. It exists only in the selector, as the empty string.
+// Nothing is written as "All" — every row written is an ordinary row against one
+// concrete Modelling_ID. Note that WL_Split legitimately stores '*' meaning "not
+// applicable" for segments that are not weight-loss; that is a real value to be
+// matched, NOT a wildcard, and conflating the two would silently widen every
+// change.
+//
+// TWO MODES, BECAUSE ONE VALUE CANNOT MEAN TWO THINGS. A base rate is currency
+// per parcel, FUEL is a fraction and the other surcharges are currency amounts
+// (Dim_Surcharge.Value_Type). So:
+//
+//   one charge type  ->  SET: every matching row takes the value entered
+//   All charge types ->  PCT: every matching row moves by the percentage entered
+//
+// A single value across mixed charge types would set a base rate to £0.14 and a
+// fuel surcharge to 14% from the same keystroke. A percentage uplift means the
+// same thing to all of them, so that is what All offers.
 //
 // SAME RULES, BATCHED WRITES. Every check a single save makes is made here, per
 // row, by the same functions: assertCanEditModellingId_ for scope,
 // precedingPeriodCloses_ for the period-closing rule, assertNoOverlapIn_ for
-// overlaps, and the identical value validation. What changes is only how the
+// overlaps, and validateChargeValue_ for the value. What changes is only how the
 // result reaches the sheet. A single save costs about seven Sheets API calls;
 // Rate_Surcharge holds some 1,650 rows and a wide selection can match hundreds of
 // them, which at seven calls each would pass the six-minute execution limit and
-// leave a half-applied price change behind. So the plan is built in memory, then
-// flushed as one ranged write for the closed periods, one append for the new
-// rows, and one recordChangesBatch_ for the history — which produces the same
-// Amends snapshots and the same per-field Audit_Log rows the single path does.
+// leave a half-applied price change behind. So the plan is built in memory, one
+// working copy per table, then each table is flushed as one ranged write for the
+// closed periods, one append for the new rows, and one recordChangesBatch_ for
+// the history — which produces the same Amends snapshots and the same per-field
+// Audit_Log rows the single path does.
 //
 // PREVIEW FIRST, ALWAYS. preview defaults to true and returns the matched rows
 // with their current values; applying requires passing back the planKey the
@@ -593,9 +609,9 @@ function bulkRateChange(p) {
  * Does a selected dimension value match a row's value?
  *
  * Empty means All. There is deliberately no magic string: a literal 'ALL' is
- * treated as a value to match, because a carrier or brand code called ALL is one
- * data operation away, and a wildcard that a data entry can impersonate is a
- * wildcard waiting to widen someone's rate change.
+ * treated as a value to match, because a brand code called ALL is one data
+ * operation away, and a wildcard that a data entry can impersonate is a wildcard
+ * waiting to widen someone's rate change.
  */
 function dimensionMatches_(selected, rowValue) {
   const want = safeStr(selected);
@@ -606,9 +622,11 @@ function dimensionMatches_(selected, rowValue) {
 /**
  * The active, editable Modelling IDs matching a dimension selection.
  *
- * Routes the caller cannot edit are counted and skipped rather than refused —
- * the same choice bulkRateChange makes, so a scoped user gets their own slice of
- * a company-wide change instead of an error naming segments they cannot see.
+ * Carrier_Code is not consulted — see the note above about why it is not
+ * selectable. Routes the caller cannot edit are counted and skipped rather than
+ * refused, the same choice bulkRateChange makes, so a scoped user gets their own
+ * slice of a company-wide change instead of an error naming segments they cannot
+ * see.
  */
 function resolveDimensionTargets_(dims, perms) {
   const sel = dims || {};
@@ -630,7 +648,6 @@ function resolveDimensionTargets_(dims, perms) {
     const id = safeInt(md[i][M.Modelling_ID]);
     if (!id || !safeBool(md[i][M.Active])) continue;
     if (!hlOk[safeInt(md[i][M.High_Level_ID])]) continue;
-    if (!dimensionMatches_(sel.carrier,      md[i][M.Carrier_Code]))  continue;
     if (!dimensionMatches_(sel.method,       md[i][M.Method_Code]))   continue;
     if (!dimensionMatches_(sel.letterParcel, md[i][M.Letter_Parcel])) continue;
 
@@ -642,38 +659,78 @@ function resolveDimensionTargets_(dims, perms) {
 }
 
 /** A human description of a selection, for the audit trail and the preview. */
-function describeDimensions_(dims, code) {
+function describeDimensions_(dims, chargeType) {
   const sel = dims || {};
-  const parts = [];
+  const parts = ['charge=' + (normKey(chargeType) || 'ALL')];
   [['brand', 'brand'], ['geo', 'geo'], ['treatmentType', 'treatment'],
-   ['wlSplit', 'WL split'], ['carrier', 'carrier'], ['method', 'method'],
+   ['wlSplit', 'WL split'], ['method', 'method'],
    ['letterParcel', 'class']].forEach(function (pair) {
     const v = safeStr(sel[pair[0]]);
     parts.push(pair[1] + '=' + (v === '' ? 'All' : v.toUpperCase()));
   });
-  if (code) parts.unshift('surcharge=' + code);
+  parts.push('carrier=All');   // stated, because it is not selectable
   return parts.join(', ');
 }
 
-/** Which table a bulk update is against, and how its rows are keyed. */
-function bulkRateShape_(kind, code) {
-  if (kind === 'SURCHARGE') {
+/** Active surcharge codes, in Dim_Surcharge order. Never a hardcoded list. */
+function activeSurchargeCodes_() {
+  const data = getAllData_(SHEET.DIM_SURCHARGE), C = COL.DIM_SURCHARGE, out = [];
+  for (let i = 1; i < data.length; i++) {
+    const code = normKey(data[i][C.Surcharge_Code]);
+    if (!code || !safeBool(data[i][C.Active])) continue;
+    out.push(code);
+  }
+  return out;
+}
+
+/**
+ * The charge types a user may pick, for the picker the client shows first.
+ *
+ * Base rate is not in Dim_Surcharge — it is a different table — so it is prepended
+ * here rather than stored anywhere. Everything else is read live, so a surcharge
+ * type added next year appears with no code change.
+ */
+function listChargeTypes() {
+  const perms = requirePermissions_();
+  requireEditRates_(perms);
+  const out = [{ chargeType: 'BASE', name: 'Base rate', valueType: 'RATE',
+                 expressed: 'rate per parcel' }];
+  const data = getAllData_(SHEET.DIM_SURCHARGE), C = COL.DIM_SURCHARGE;
+  const rows = [];
+  for (let i = 1; i < data.length; i++) {
+    const code = normKey(data[i][C.Surcharge_Code]);
+    if (!code || !safeBool(data[i][C.Active])) continue;
+    const vt = normKey(data[i][C.Value_Type]);
+    rows.push({ chargeType: code, name: safeStr(data[i][C.Surcharge_Name]) || code,
+                valueType: vt, order: safeInt(data[i][C.Apply_Order]),
+                expressed: vt === 'PCT' ? 'percentage of base' : 'fixed amount' });
+  }
+  rows.sort(function (a, b) { return a.order - b.order || a.chargeType.localeCompare(b.chargeType); });
+  return out.concat(rows);
+}
+
+/** Which table a charge type is against, and how its rows are keyed. */
+function bulkRateShape_(chargeType) {
+  const ct = normKey(chargeType);
+  if (ct && ct !== 'BASE') {
     const SC = COL.RATE_SURCHARGE;
     return {
-      kind: 'SURCHARGE', tableKey: 'RATE_SURCHARGE', table: TABLES.RATE_SURCHARGE,
+      kind: 'SURCHARGE', chargeType: ct, code: ct,
+      tableKey: 'RATE_SURCHARGE', table: TABLES.RATE_SURCHARGE,
       C: SC, idCol: SC.Surcharge_Rate_ID, valueCol: SC.Value,
       keyMatch: function (mid) {
         return function (r) {
           return safeInt(r[SC.Modelling_ID]) === mid &&
-                 normKey(r[SC.Surcharge_Code]) === code;
+                 normKey(r[SC.Surcharge_Code]) === ct;
         };
       },
-      label: function (mid) { return 'Modelling ID ' + mid + ' ' + code; }
+      label: function (mid) { return 'Modelling ID ' + mid + ' ' + ct; }
     };
   }
   const BC = COL.RATE_BASE;
   return {
-    kind: 'BASE', tableKey: 'RATE_BASE', table: TABLES.RATE_BASE,
+    kind: 'BASE', chargeType: 'BASE', code: '',
+    tableKey: 'RATE_BASE', table: TABLES.RATE_BASE,
     C: BC, idCol: BC.Rate_ID, valueCol: BC.Base_Rate,
     keyMatch: function (mid) {
       return function (r) { return safeInt(r[BC.Modelling_ID]) === mid; };
@@ -683,11 +740,57 @@ function bulkRateShape_(kind, code) {
 }
 
 /**
+ * The charge types one request covers: one, or every one there is.
+ *
+ * 'ALL' expands to the base rate plus every active surcharge, so a single request
+ * can span both rate tables. There is no default — an empty charge type is a
+ * refusal, because the client's first step exists precisely to make the user
+ * choose one.
+ */
+function chargeTypeGroups_(chargeType) {
+  const ct = normKey(chargeType);
+  if (!ct) throw new Error('Choose which charge you are changing before going on.');
+  if (ct === 'ALL') {
+    return [bulkRateShape_('BASE')].concat(
+      activeSurchargeCodes_().map(function (c) { return bulkRateShape_(c); }));
+  }
+  if (ct !== 'BASE' && !surchargeDefinition_(ct)) {
+    throw new Error('Unknown charge type "' + ct + '".');
+  }
+  return [bulkRateShape_(ct)];
+}
+
+/**
+ * The single-save value rules, applied to a bulk row.
+ *
+ * Identical to the checks in saveBaseRate and saveSurchargeRate, in one place so
+ * both the set-to and the uplift mode are held to them — an uplift can just as
+ * easily drive a rate negative as a typed value can.
+ */
+function validateChargeValue_(shape, value, whose) {
+  const where = whose ? ' (' + whose + ')' : '';
+  if (shape.kind === 'BASE') {
+    if (value < 0) throw new Error('A base rate cannot be negative' + where + '.');
+    return value;
+  }
+  const def = surchargeDefinition_(shape.code);
+  if (!def) throw new Error('Unknown surcharge type "' + shape.code + '".');
+  if (def.valueType === 'PCT' && (value < -1 || value > 2)) {
+    throw new Error('A percentage surcharge should be a fraction — 0.14 for 14%' +
+                    where + '.');
+  }
+  return value;
+}
+
+function roundRate_(v) { return Math.round(v * 1000000) / 1000000; }
+
+/**
  * Work out what a bulk update would do, without touching anything.
  *
- * For each matching route this finds the row a new period would supersede: the
- * one in force on the new start date, or failing that the latest one starting
- * before it. A route with no such row is reported as skipped, not created.
+ * For each charge type and each matching route this finds the row a new period
+ * would supersede: the one in force on the new start date, or failing that the
+ * latest one starting before it. A route with no such row is reported as skipped,
+ * not created.
  *
  * Scenario_ID is deliberately NOT part of the match, because the single-save path
  * does not filter on it either (finding C5). With one scenario the two are
@@ -695,72 +798,82 @@ function bulkRateShape_(kind, code) {
  * in one go rather than diverging here first.
  */
 function planBulkRateUpdate_(p, perms) {
-  const kind  = normKey(p.kind) === 'SURCHARGE' ? 'SURCHARGE' : 'BASE';
-  const code  = kind === 'SURCHARGE' ? normKey(p.surchargeCode) : '';
-  const value = safeNum(p.value);
+  const chargeType = normKey(p.chargeType);
+  const groups = chargeTypeGroups_(chargeType);
+  const mode = chargeType === 'ALL' ? 'PCT' : 'SET';
+  const entered = safeNum(p.value);
 
-  if (kind === 'SURCHARGE') {
-    if (!code) throw new Error('Choose which surcharge type to change. "All" is ' +
-      'not available there, because percentage and fixed-amount surcharges ' +
-      'cannot share one value.');
-    const def = surchargeDefinition_(code);
-    if (!def) throw new Error('Unknown surcharge type "' + code + '".');
-    if (def.valueType === 'PCT' && (value < -1 || value > 2)) {
-      throw new Error('A percentage surcharge should be a fraction — 0.14 for 14%.');
-    }
-  } else if (value < 0) {
-    throw new Error('A base rate cannot be negative.');
+  if (mode === 'PCT' && entered <= -100) {
+    throw new Error('An uplift of -100% or less would take every charge to zero ' +
+                    'or below. Enter a percentage above -100.');
   }
+  if (mode === 'SET') validateChargeValue_(groups[0], entered);
 
   const d = validateDates_(p.validFrom, p.validTo);
-  const shape = bulkRateShape_(kind, code);
-  const C = shape.C;
   const targets = resolveDimensionTargets_(p.dimensions, perms);
-  const data = getAllData_(shape.table.sheet);
+  const factor = 1 + entered / 100;
 
-  const items = [];
-  let skippedNoRate = 0;
+  let count = 0, skippedNoRate = 0;
+  const planned = groups.map(function (shape) {
+    const C = shape.C;
+    const data = getAllData_(shape.table.sheet);
+    const items = [];
 
-  targets.ids.forEach(function (mid) {
-    const matches = shape.keyMatch(mid);
-    let cur = null;
-    for (let i = 1; i < data.length; i++) {
-      if (!safeBool(data[i][C.Active])) continue;
-      if (!matches(data[i])) continue;
-      const f = dateKey(data[i][C.Valid_From]), t = dateKey(data[i][C.Valid_To]);
-      const row = { id: safeInt(data[i][shape.idCol]), fromKey: f,
-                    value: safeNum(data[i][shape.valueCol]),
-                    validFrom: fmtDate(data[i][C.Valid_From]),
-                    validTo: fmtDate(data[i][C.Valid_To]) };
-      if (f <= d.fromKey && t >= d.fromKey) { cur = row; break; }   // in force
-      if (f <= d.fromKey && (!cur || f > cur.fromKey)) cur = row;   // latest before
-    }
-    if (!cur) { skippedNoRate++; return; }
-    items.push({ modellingId: mid, rateId: cur.id, from: cur.value, to: value,
-                 diff: value - cur.value,
-                 pct: cur.value ? (value - cur.value) / cur.value * 100 : 0,
-                 currentFrom: cur.validFrom, currentTo: cur.validTo });
+    targets.ids.forEach(function (mid) {
+      const matches = shape.keyMatch(mid);
+      let cur = null;
+      for (let i = 1; i < data.length; i++) {
+        if (!safeBool(data[i][C.Active])) continue;
+        if (!matches(data[i])) continue;
+        const f = dateKey(data[i][C.Valid_From]), t = dateKey(data[i][C.Valid_To]);
+        const row = { id: safeInt(data[i][shape.idCol]), fromKey: f,
+                      value: safeNum(data[i][shape.valueCol]),
+                      validFrom: fmtDate(data[i][C.Valid_From]),
+                      validTo: fmtDate(data[i][C.Valid_To]) };
+        if (f <= d.fromKey && t >= d.fromKey) { cur = row; break; }   // in force
+        if (f <= d.fromKey && (!cur || f > cur.fromKey)) cur = row;   // latest before
+      }
+      if (!cur) { skippedNoRate++; return; }
+
+      const to = roundRate_(mode === 'PCT' ? cur.value * factor : entered);
+      validateChargeValue_(shape, to, shape.label(mid));
+      items.push({ modellingId: mid, rateId: cur.id, from: cur.value, to: to,
+                   diff: roundRate_(to - cur.value),
+                   pct: cur.value ? (to - cur.value) / cur.value * 100 : 0,
+                   currentFrom: cur.validFrom, currentTo: cur.validTo });
+    });
+
+    count += items.length;
+    return { shape: shape, items: items, distinct: distinctMoves_(items) };
   });
-
-  // Distinct current values, so the preview can say what is about to be
-  // flattened. Selection is by dimension alone, which makes showing the spread of
-  // what is being overwritten the safeguard rather than a filter on it.
-  const byValue = {};
-  items.forEach(function (it) {
-    const k = String(Math.round(it.from * 1000000) / 1000000);
-    byValue[k] = (byValue[k] || 0) + 1;
-  });
-  const distinct = Object.keys(byValue)
-    .map(function (k) { return { value: safeNum(k), rows: byValue[k] }; })
-    .sort(function (a, b) { return b.rows - a.rows || a.value - b.value; });
 
   return {
-    kind: kind, code: code, value: value, dates: d, shape: shape, items: items,
-    count: items.length, routesMatched: targets.routesMatched,
+    chargeType: chargeType, mode: mode, entered: entered, dates: d,
+    groups: planned.filter(function (g) { return g.items.length > 0; }),
+    emptyGroups: planned.filter(function (g) { return !g.items.length; }).length,
+    count: count, routesMatched: targets.routesMatched,
     skippedNoScope: targets.skippedNoScope, skippedNoRate: skippedNoRate,
-    distinct: distinct, planKey: planKey_(items),
-    selection: describeDimensions_(p.dimensions, code)
+    planKey: planKey_(planned), selection: describeDimensions_(p.dimensions, chargeType)
   };
+}
+
+/**
+ * The distinct from -> to moves in a group, commonest first.
+ *
+ * Selection is by dimension alone, so showing the spread of what is about to be
+ * overwritten is the safeguard rather than a filter on it. In set-to mode every
+ * `to` is the same and this reads as "what is being flattened"; in uplift mode
+ * each `from` has its own `to`.
+ */
+function distinctMoves_(items) {
+  const seen = {};
+  items.forEach(function (it) {
+    const k = String(it.from) + '>' + String(it.to);
+    if (!seen[k]) seen[k] = { from: it.from, to: it.to, rows: 0 };
+    seen[k].rows++;
+  });
+  return Object.keys(seen).map(function (k) { return seen[k]; })
+    .sort(function (a, b) { return b.rows - a.rows || a.from - b.from; });
 }
 
 /**
@@ -769,12 +882,18 @@ function planBulkRateUpdate_(p, perms) {
  * The client previews, the user confirms, and the apply call sends this back. If
  * the matched set has moved in between — someone else edited a rate, a route was
  * deactivated — the recomputed key differs and the write is refused, so a
- * confirmation can only ever apply the set that was actually shown.
+ * confirmation can only ever apply the set that was actually shown. Keyed on the
+ * charge type too, so a plan cannot be replayed against a different charge.
  */
-function planKey_(items) {
-  const s = items.map(function (it) {
-    return it.rateId + ':' + Math.round(it.from * 1000000);
-  }).sort().join('|');
+function planKey_(groups) {
+  const parts = [];
+  groups.forEach(function (g) {
+    g.items.forEach(function (it) {
+      parts.push(g.shape.chargeType + ':' + it.rateId + ':' +
+                 Math.round(it.from * 1000000) + ':' + Math.round(it.to * 1000000));
+    });
+  });
+  const s = parts.sort().join('|');
   const bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, s || 'empty');
   return bytes.map(function (b) {
     return ('0' + (b < 0 ? b + 256 : b).toString(16)).slice(-2);
@@ -782,16 +901,17 @@ function planKey_(items) {
 }
 
 /**
- * Bulk update base rates or surcharges across a dimension selection.
+ * Bulk update one charge type, or every charge type, across a dimension selection.
  *
  * Previews by default. Pass preview:false together with the planKey the preview
  * returned to actually write.
  *
- * @param {Object} p { kind: 'BASE'|'SURCHARGE', surchargeCode,
+ * @param {Object} p { chargeType: 'BASE' | <surcharge code> | 'ALL',
  *                     dimensions: { brand, geo, treatmentType, wlSplit,
- *                                   carrier, method, letterParcel },
- *                     validFrom, validTo, value, currency, sourceRef,
- *                     scenarioId, preview, planKey }
+ *                                   method, letterParcel },
+ *                     validFrom, validTo,
+ *                     value,        // set-to value, or an uplift % when ALL
+ *                     currency, sourceRef, scenarioId, preview, planKey }
  */
 function bulkUpdateRates(p) {
   prewarmForWrite_([SHEET.RATE_BASE, SHEET.RATE_BASE_AMENDS,
@@ -803,18 +923,25 @@ function bulkUpdateRates(p) {
   const plan = planBulkRateUpdate_(p, perms);
 
   if (p.preview !== false) {
-    return { preview: true, kind: plan.kind, code: plan.code,
-             count: plan.count, routesMatched: plan.routesMatched,
-             skippedNoScope: plan.skippedNoScope, skippedNoRate: plan.skippedNoRate,
-             distinct: plan.distinct, planKey: plan.planKey,
-             selection: plan.selection, value: plan.value,
-             validFrom: fmtDate(plan.dates.from), validTo: fmtDate(plan.dates.to),
-             changes: plan.items };
+    return {
+      preview: true, chargeType: plan.chargeType, mode: plan.mode,
+      value: plan.entered, count: plan.count,
+      routesMatched: plan.routesMatched, skippedNoScope: plan.skippedNoScope,
+      skippedNoRate: plan.skippedNoRate, planKey: plan.planKey,
+      selection: plan.selection,
+      validFrom: fmtDate(plan.dates.from), validTo: fmtDate(plan.dates.to),
+      groups: plan.groups.map(function (g) {
+        const def = g.shape.kind === 'SURCHARGE' ? surchargeDefinition_(g.shape.code) : null;
+        return { chargeType: g.shape.chargeType, kind: g.shape.kind,
+                 valueType: def ? def.valueType : 'RATE',
+                 count: g.items.length, distinct: g.distinct };
+      })
+    };
   }
 
   if (!plan.count) throw new Error('Nothing matches that selection, so there is ' +
-    'nothing to update. ' + plan.skippedNoRate + ' matching route(s) have no rate ' +
-    'to supersede, and ' + plan.skippedNoScope + ' are outside what you can edit.');
+    'nothing to update. ' + plan.skippedNoRate + ' matching charge(s) have no rate ' +
+    'to supersede, and ' + plan.skippedNoScope + ' route(s) are outside what you can edit.');
 
   if (safeStr(p.planKey) !== plan.planKey) {
     throw new Error('These rates have changed since the preview was taken, so ' +
@@ -828,106 +955,137 @@ function bulkUpdateRates(p) {
 /**
  * Write a planned bulk update. Assumes the caller holds the lock.
  *
- * Runs the same per-row rules as a single save against one in-memory copy of the
- * table, then flushes. The copy is mutated as it goes — closing a period for one
- * route before planning the next — so each route's overlap check sees the closes
- * and the new rows that earlier routes in the same batch produced.
+ * Runs the same per-row rules as a single save against one working copy per
+ * table, then flushes each table once. The copy is mutated as it goes — closing a
+ * period for one route before planning the next — so each route's overlap check
+ * sees the closes and the new rows that earlier routes in the same batch
+ * produced. One copy PER TABLE rather than per charge type, because "All" puts
+ * several surcharge groups on Rate_Surcharge and separate copies would each flush
+ * over the last one's work.
  */
 function applyBulkRateUpdate_(p, plan, perms) {
-  const shape = plan.shape, C = shape.C, width = shape.table.headers.length;
-  const sheetName = shape.table.sheet;
-  invalidateSheetCache_(sheetName);
-
-  // A padded copy, not the cached array itself. Padding once up front means the
-  // whole function works on full-width rows, which is what makes the ranged write
-  // at the end safe (finding C6); copying means a refusal part-way through the
-  // batch cannot leave half-applied values behind in the execution cache for
-  // whatever reads next.
-  const source = getAllData_(sheetName);
-  const originalRows = source.length - 1;   // before any new row is appended
-  const data = source.map(function (r) { return padRow_(r, width); });
   const now = new Date();
   const batchRef = bulkBatchRef_(now);
   const scenarioId = safeInt(p.scenarioId) || 1;
+  const ctx = {};
 
-  const changed = {};        // dataIndex -> true, for rows whose period was closed
-  const creates = [];
-  const history = [];
-  let nextId = getNextId_(sheetName, shape.idCol);
+  function workingSet(shape) {
+    const name = shape.table.sheet;
+    if (!ctx[name]) {
+      invalidateSheetCache_(name);
+      const width = shape.table.headers.length;
+      const source = getAllData_(name);
+      ctx[name] = {
+        sheetName: name, tableKey: shape.tableKey, width: width, idCol: shape.idCol,
+        originalRows: source.length - 1,
+        data: source.map(function (r) { return padRow_(r, width); }),
+        changed: {}, creates: [], history: [],
+        nextId: getNextId_(name, shape.idCol)
+      };
+    }
+    return ctx[name];
+  }
 
-  plan.items.forEach(function (item) {
-    const mid = item.modellingId;
-    assertCanEditModellingId_(perms, mid);     // per row, as a single save does
-    const matches = shape.keyMatch(mid);
+  plan.groups.forEach(function (g) {
+    const shape = g.shape, C = shape.C;
+    const ws = workingSet(shape);
 
-    // 1. close whatever period is running — the same rule the single save uses
-    precedingPeriodCloses_(data, C, matches, plan.dates.from).forEach(function (c) {
-      const before = data[c.dataIndex].slice();
-      const after = before.slice();
-      after[C.Valid_To]   = c.newTo;
-      after[C.Updated_TS] = now;
-      after[C.Updated_By] = perms.email;
-      data[c.dataIndex] = after;
-      changed[c.dataIndex] = true;
-      history.push({ id: safeInt(before[shape.idCol]), before: before,
-                     after: after, type: 'UPDATE' });
+    g.items.forEach(function (item) {
+      const mid = item.modellingId;
+      assertCanEditModellingId_(perms, mid);     // per row, as a single save does
+      const matches = shape.keyMatch(mid);
+
+      // 1. close whatever period is running — the same rule the single save uses
+      precedingPeriodCloses_(ws.data, C, matches, plan.dates.from).forEach(function (c) {
+        const before = ws.data[c.dataIndex].slice();
+        const after = before.slice();
+        after[C.Valid_To]   = c.newTo;
+        after[C.Updated_TS] = now;
+        after[C.Updated_By] = perms.email;
+        ws.data[c.dataIndex] = after;
+        ws.changed[c.dataIndex] = true;
+        ws.history.push({ id: safeInt(before[shape.idCol]), before: before,
+                          after: after, type: 'UPDATE' });
+      });
+
+      // 2. refuse an overlap — the same rule, against the copy as it now stands
+      assertNoOverlapIn_(ws.data, C, matches, plan.dates.fromKey, plan.dates.toKey,
+                         0, shape.idCol, shape.label(mid));
+
+      // 3. the new period
+      const row = blankRow_(shape.tableKey);
+      row[shape.idCol]     = ws.nextId++;
+      row[C.Modelling_ID]  = mid;
+      if (shape.kind === 'SURCHARGE') row[C.Surcharge_Code] = shape.code;
+      row[C.Valid_From]    = plan.dates.from;
+      row[C.Valid_To]      = plan.dates.to;
+      row[shape.valueCol]  = item.to;
+      row[C.Currency]      = bulkRowCurrency_(shape, mid, p);
+      row[C.Scenario_ID]   = scenarioId;
+      row[C.Source_Ref]    = safeStr(p.sourceRef) || batchRef;
+      row[C.Notes]         = truncate_('Bulk ' + batchRef + ': ' +
+                                       describeMove_(plan, item) + ' (' + plan.selection + ')');
+      row[C.Active]        = true;
+      row[C.Created_TS]    = now;
+      row[C.Created_By]    = perms.email;
+      row[C.Updated_TS]    = now;
+      row[C.Updated_By]    = perms.email;
+
+      ws.creates.push(row);
+      ws.data.push(row);      // so the next route's overlap check sees it
+      ws.history.push({ id: row[shape.idCol], before: null, after: row, type: 'CREATE' });
     });
-
-    // 2. refuse an overlap — the same rule, against the copy as it now stands
-    assertNoOverlapIn_(data, C, matches, plan.dates.fromKey, plan.dates.toKey,
-                       0, shape.idCol, shape.label(mid));
-
-    // 3. the new period
-    const row = blankRow_(shape.tableKey);
-    row[shape.idCol]     = nextId++;
-    row[C.Modelling_ID]  = mid;
-    if (shape.kind === 'SURCHARGE') row[C.Surcharge_Code] = plan.code;
-    row[C.Valid_From]    = plan.dates.from;
-    row[C.Valid_To]      = plan.dates.to;
-    row[shape.valueCol]  = plan.value;
-    row[C.Currency]      = bulkRowCurrency_(shape, plan, mid, p);
-    row[C.Scenario_ID]   = scenarioId;
-    row[C.Source_Ref]    = safeStr(p.sourceRef) || batchRef;
-    row[C.Notes]         = truncate_('Bulk ' + batchRef + ': set to ' + plan.value +
-                                     ' (' + plan.selection + ')');
-    row[C.Active]        = true;
-    row[C.Created_TS]    = now;
-    row[C.Created_By]    = perms.email;
-    row[C.Updated_TS]    = now;
-    row[C.Updated_By]    = perms.email;
-
-    creates.push(row);
-    data.push(row);      // so the next route's overlap check sees it
-    history.push({ id: row[shape.idCol], before: null, after: row, type: 'CREATE' });
   });
 
-  // ---- flush ---------------------------------------------------------------
+  // ---- flush, one table at a time -----------------------------------------
   // One ranged write for the closed periods rather than one per row. Rows come
-  // back from batchGet with trailing empty cells omitted, so every row is padded
-  // to the header width before being written back — finding C6, which is exactly
-  // this mistake made in structure.gs.
-  const sh = getSheet_(sheetName);
-  if (Object.keys(changed).length) {
-    sh.getRange(2, 1, originalRows, width).setValues(data.slice(1, 1 + originalRows));
-  }
-  if (creates.length) {
-    sh.getRange(sh.getLastRow() + 1, 1, creates.length, width).setValues(creates);
-  }
-  invalidateSheetCache_(sheetName);
+  // back from batchGet with trailing empty cells omitted, which is why the whole
+  // working copy was padded to the header width up front — finding C6, which is
+  // exactly this mistake made in structure.gs.
+  let rowsClosed = 0, rowsCreated = 0;
+  Object.keys(ctx).forEach(function (name) {
+    const ws = ctx[name];
+    const sh = getSheet_(name);
+    if (Object.keys(ws.changed).length) {
+      sh.getRange(2, 1, ws.originalRows, ws.width)
+        .setValues(ws.data.slice(1, 1 + ws.originalRows));
+    }
+    if (ws.creates.length) {
+      sh.getRange(sh.getLastRow() + 1, 1, ws.creates.length, ws.width)
+        .setValues(ws.creates);
+    }
+    invalidateSheetCache_(name);
 
-  // The same Amends snapshots and the same per-field Audit_Log rows a single save
-  // makes, in a handful of calls instead of two per row, each stamped with the
-  // batch reference so History can show them as one action.
-  recordChangesBatch_(shape.tableKey, history, batchRef);
+    // The same Amends snapshots and the same per-field Audit_Log rows a single
+    // save makes, in a handful of calls instead of two per row, each stamped with
+    // the batch reference so History can show them as one action.
+    recordChangesBatch_(ws.tableKey, ws.history, batchRef);
+    rowsClosed  += Object.keys(ws.changed).length;
+    rowsCreated += ws.creates.length;
+  });
+
   logAudit_('UPDATE', 'BULK_RATE_UPDATE', batchRef, '', '',
-            plan.count + ' rows set to ' + plan.value,
-            plan.kind + ' ' + (plan.code || '') + ' from ' +
-            fmtDate(plan.dates.from) + ' — ' + plan.selection, true);
+            plan.count + ' rows, ' + describeChange_(plan),
+            'from ' + fmtDate(plan.dates.from) + ' — ' + plan.selection, true);
 
   return { preview: false, batchRef: batchRef, written: plan.count,
-           rowsClosed: Object.keys(changed).length, rowsCreated: creates.length,
+           mode: plan.mode, chargeType: plan.chargeType,
+           rowsClosed: rowsClosed, rowsCreated: rowsCreated,
            skippedNoScope: plan.skippedNoScope, skippedNoRate: plan.skippedNoRate,
-           changes: plan.items };
+           groups: plan.groups.map(function (g) {
+             return { chargeType: g.shape.chargeType, written: g.items.length }; }) };
+}
+
+/** "set to 0.165", or "0.14 +6% -> 0.1484", for a row's Notes. */
+function describeMove_(plan, item) {
+  if (plan.mode === 'SET') return 'set to ' + item.to;
+  return item.from + ' ' + (plan.entered >= 0 ? '+' : '') + plan.entered + '% -> ' + item.to;
+}
+
+/** "set to 0.165" or "+6% across every charge type", for the summary audit row. */
+function describeChange_(plan) {
+  if (plan.mode === 'SET') return 'set to ' + plan.entered;
+  return (plan.entered >= 0 ? '+' : '') + plan.entered + '% across every charge type';
 }
 
 /**
@@ -937,9 +1095,9 @@ function applyBulkRateUpdate_(p, plan, perms) {
  * the Rates screen shows "0.14 GBP" for what is 14%. Mirrors what saveBaseRate
  * and saveSurchargeRate each do for a single row.
  */
-function bulkRowCurrency_(shape, plan, mid, p) {
+function bulkRowCurrency_(shape, mid, p) {
   if (shape.kind === 'SURCHARGE') {
-    const def = surchargeDefinition_(plan.code);
+    const def = surchargeDefinition_(shape.code);
     if (!def || def.valueType !== 'AMT') return '';
   }
   return safeStr(p.currency) || currencyForModellingId_(mid);
@@ -1058,20 +1216,46 @@ function testRateWrite() {
  * It exercises the surcharge path, because that is the harder of the two: it has
  * the extra Surcharge_Code key and the percentage-versus-amount rule.
  */
+/**
+ * End-to-end test of the bulk update, which puts the tables back exactly as it
+ * found them.
+ *
+ * Unlike testRateWrite, this one cannot confine itself to a spare year: closing
+ * the preceding period is the whole point of the feature, so applying it edits
+ * Valid_To on live rows. So it snapshots every table it will touch first, and
+ * afterwards restores each changed row byte for byte and deactivates each row it
+ * created. Nothing is left behind, which is what makes it safe to re-run.
+ *
+ * It covers the set-to mode on one surcharge type and the uplift mode across all
+ * charge types, since the second is the only path that writes to both rate tables
+ * in one action.
+ */
 function testBulkRateUpdate() {
   requireMaintenance_();
   Logger.log('=== BULK RATE UPDATE TEST ===');
   const perms = requirePermissions_();
   Logger.log('  acting as ' + perms.email + ' (' + perms.role + ')');
 
-  const t = TABLES.RATE_SURCHARGE, C = COL.RATE_SURCHARGE, width = t.headers.length;
   const checks = [];
   function check(name, pass, detail) {
     checks.push({ name: name, pass: !!pass });
     Logger.log('  ' + (pass ? 'ok   ' : 'FAIL ') + name + (detail ? '  — ' + detail : ''));
   }
 
-  // ---- 1. dimension resolution -------------------------------------------
+  // ---- 1. the charge types on offer ---------------------------------------
+  Logger.log('');
+  Logger.log('--- charge types, read from Dim_Surcharge ---');
+  const types = listChargeTypes();
+  types.forEach(function (t) {
+    Logger.log('  ' + t.chargeType + '  ' + t.name + '  (' + t.expressed + ')');
+  });
+  check('base rate is offered first', types.length > 0 && types[0].chargeType === 'BASE');
+  check('at least one surcharge type is offered', types.length > 1);
+  check('every charge type has a name and a value type',
+        types.every(function (t) { return !!t.name && !!t.valueType; }));
+  check('no charge type is called ALL', !types.some(function (t) { return t.chargeType === 'ALL'; }));
+
+  // ---- 2. dimension resolution -------------------------------------------
   Logger.log('');
   Logger.log('--- dimension resolution ---');
   const all = resolveDimensionTargets_({}, perms);
@@ -1079,166 +1263,169 @@ function testBulkRateUpdate() {
              all.routesMatched + ' matched, ' + all.skippedNoScope + ' out of scope)');
   check('All-everything matches routes', all.ids.length > 0);
 
-  const rm = resolveDimensionTargets_({ carrier: 'ROYALMAIL' }, perms);
-  const rmLetter = resolveDimensionTargets_({ carrier: 'ROYALMAIL', letterParcel: 'LETTER' }, perms);
-  Logger.log('  carrier=ROYALMAIL          : ' + rm.ids.length);
-  Logger.log('  + class=LETTER             : ' + rmLetter.ids.length);
-  check('naming a dimension narrows the set',
-        rm.ids.length <= all.ids.length && rmLetter.ids.length <= rm.ids.length);
+  const letters = resolveDimensionTargets_({ letterParcel: 'LETTER' }, perms);
+  Logger.log('  class=LETTER               : ' + letters.ids.length);
+  check('naming a dimension narrows the set', letters.ids.length <= all.ids.length);
 
-  // WL_Split '*' means "not applicable" and is a value to match, not a wildcard.
+  // Carrier is no longer selectable: passing one must not narrow anything.
+  const withCarrier = resolveDimensionTargets_({ carrier: 'ROYALMAIL' }, perms);
+  Logger.log('  carrier=ROYALMAIL (ignored): ' + withCarrier.ids.length +
+             '  (must equal the All-everything count)');
+  check('a carrier in the payload is ignored, not honoured',
+        withCarrier.ids.length === all.ids.length);
+
   const star = resolveDimensionTargets_({ wlSplit: '*' }, perms);
   Logger.log("  wlSplit='*'                : " + star.ids.length +
-             '  (must be fewer than All — it is a value, not a wildcard)');
+             '  (a value, not a wildcard)');
   check("WL_Split '*' is matched as a value", star.ids.length < all.ids.length);
+  check('an unknown value matches nothing',
+        resolveDimensionTargets_({ brand: 'NO_SUCH_BRAND' }, perms).ids.length === 0);
 
-  const nobody = resolveDimensionTargets_({ brand: 'NO_SUCH_BRAND' }, perms);
-  check('an unknown value matches nothing', nobody.ids.length === 0);
+  // ---- 3. a charge type must be chosen -----------------------------------
+  Logger.log('');
+  Logger.log('--- a charge type is compulsory ---');
+  let noneRefused = false, badRefused = false;
+  const baseReq = { dimensions: { letterParcel: 'LETTER' },
+                    validFrom: '2035-01-01', validTo: '9999-12-31',
+                    sourceRef: 'testBulkRateUpdate' };
+  try { bulkUpdateRates(Object.assign({}, baseReq, { chargeType: '', value: 1 })); }
+  catch (e) { noneRefused = true; Logger.log('  refused, correctly: ' + e.message); }
+  try { bulkUpdateRates(Object.assign({}, baseReq, { chargeType: 'NOPE', value: 1 })); }
+  catch (e) { badRefused = true; }
+  check('no charge type is refused', noneRefused);
+  check('an unknown charge type is refused', badRefused);
 
-  // ---- 2. pick a real, narrow selection ----------------------------------
-  // Built from an existing surcharge row, so the test always has something to
-  // supersede: All brands / geos / treatments / splits, with this row's carrier,
-  // method, class and surcharge type named. That is example 1's exact shape.
-  invalidateSheetCache_(t.sheet);
-  const rows = getAllData_(t.sheet);
-  const mdById = {};
-  const md = getAllData_(SHEET.MODELLING_IDS), M = COL.MODELLING_IDS;
-  for (let i = 1; i < md.length; i++) {
-    mdById[safeInt(md[i][M.Modelling_ID])] = {
-      carrier: safeStr(md[i][M.Carrier_Code]), method: safeStr(md[i][M.Method_Code]),
-      lp: safeStr(md[i][M.Letter_Parcel])
-    };
-  }
-
-  let seed = null;
-  for (let i = 1; i < rows.length && !seed; i++) {
-    if (!safeBool(rows[i][C.Active])) continue;
-    const route = mdById[safeInt(rows[i][C.Modelling_ID])];
-    if (!route || !route.carrier || !route.method) continue;
-    seed = { code: normKey(rows[i][C.Surcharge_Code]), route: route };
-  }
-  if (!seed) {
-    Logger.log('');
-    Logger.log('NO ACTIVE SURCHARGE ROWS — nothing to test against. Load some rates first.');
-    return { ok: false, reason: 'no surcharge rows' };
-  }
-
-  const dimensions = { brand: '', geo: '', treatmentType: '', wlSplit: '',
-                       carrier: seed.route.carrier, method: seed.route.method,
-                       letterParcel: seed.route.lp };
-  const req = { kind: 'SURCHARGE', surchargeCode: seed.code, dimensions: dimensions,
-                validFrom: '2035-01-01', validTo: '9999-12-31', value: 0.0777,
-                sourceRef: 'testBulkRateUpdate' };
+  // ---- 4. set-to mode on one surcharge type ------------------------------
+  const sur = types.filter(function (t) { return t.chargeType !== 'BASE'; })[0];
+  const setValue = sur.valueType === 'PCT' ? 0.0777 : 0.77;
+  const setReq = Object.assign({}, baseReq, { chargeType: sur.chargeType, value: setValue });
 
   Logger.log('');
-  Logger.log('--- preview ---');
-  Logger.log('  ' + describeDimensions_(dimensions, seed.code));
-  const pv = bulkUpdateRates(req);
+  Logger.log('--- preview: set ' + sur.chargeType + ' to ' + setValue + ' ---');
+  const pv = bulkUpdateRates(setReq);
+  Logger.log('  mode                       : ' + pv.mode);
   Logger.log('  rows that would change     : ' + pv.count);
   Logger.log('  routes matched             : ' + pv.routesMatched +
              '  (no rate to supersede: ' + pv.skippedNoRate +
              ', out of scope: ' + pv.skippedNoScope + ')');
-  Logger.log('  current values found       :');
-  pv.distinct.forEach(function (d) {
-    Logger.log('    ' + d.value + '  x ' + d.rows + ' row(s)');
+  pv.groups.forEach(function (g) {
+    Logger.log('  ' + g.chargeType + ' (' + g.valueType + '): ' + g.count + ' rows');
+    g.distinct.forEach(function (d) {
+      Logger.log('      ' + d.from + ' -> ' + d.to + '   x ' + d.rows);
+    });
   });
-  Logger.log('  planKey                    : ' + pv.planKey);
-  check('preview matched at least one row', pv.count > 0);
-  check('preview wrote nothing',
-        getAllData_(t.sheet).length === rows.length, 'row count unchanged');
+  check('a single charge type gives set-to mode', pv.mode === 'SET');
+  check('only the chosen charge type is planned',
+        pv.groups.length <= 1 &&
+        (!pv.groups.length || pv.groups[0].chargeType === sur.chargeType));
+  check('set-to moves every row to the same value',
+        !pv.groups.length || pv.groups[0].distinct.every(function (d) { return d.to === setValue; }));
+  check('the same selection gives the same planKey',
+        bulkUpdateRates(setReq).planKey === pv.planKey);
 
-  const pv2 = bulkUpdateRates(req);
-  check('the same selection gives the same planKey', pv2.planKey === pv.planKey);
-
-  // ---- 3. a stale confirmation must be refused ---------------------------
-  Logger.log('');
-  Logger.log('--- a wrong planKey must be refused ---');
   let staleRefused = false;
   try {
-    bulkUpdateRates(Object.assign({}, req, { preview: false, planKey: 'deadbeef0000' }));
-  } catch (e) {
-    staleRefused = true;
-    Logger.log('  refused, correctly: ' + e.message);
-  }
+    bulkUpdateRates(Object.assign({}, setReq, { preview: false, planKey: 'deadbeef0000' }));
+  } catch (e) { staleRefused = true; Logger.log('  stale key refused: ' + e.message); }
   check('a stale planKey is refused', staleRefused);
 
-  // ---- 4. a percentage surcharge cannot take an absurd value -------------
-  const def = surchargeDefinition_(seed.code);
-  if (def && def.valueType === 'PCT') {
+  if (sur.valueType === 'PCT') {
     let pctRefused = false;
-    try {
-      bulkUpdateRates(Object.assign({}, req, { value: 45 }));
-    } catch (e) { pctRefused = true; }
+    try { bulkUpdateRates(Object.assign({}, setReq, { value: 45 })); }
+    catch (e) { pctRefused = true; }
     check('a percentage surcharge refuses 45 (i.e. 4500%)', pctRefused);
-  } else {
-    Logger.log('  (skipped the percentage check — ' + seed.code + ' is an amount)');
   }
 
-  let missingCodeRefused = false;
-  try {
-    bulkUpdateRates(Object.assign({}, req, { surchargeCode: '' }));
-  } catch (e) { missingCodeRefused = true; }
-  check('a surcharge bulk update refuses All for the type', missingCodeRefused);
+  // ---- 5. uplift mode across every charge type ---------------------------
+  Logger.log('');
+  Logger.log('--- preview: +6% across ALL charge types ---');
+  const allReq = Object.assign({}, baseReq, { chargeType: 'ALL', value: 6 });
+  const pvAll = bulkUpdateRates(allReq);
+  Logger.log('  mode                       : ' + pvAll.mode);
+  Logger.log('  rows that would change     : ' + pvAll.count);
+  pvAll.groups.forEach(function (g) {
+    Logger.log('  ' + g.chargeType + ' (' + g.valueType + '): ' + g.count + ' rows');
+    g.distinct.slice(0, 3).forEach(function (d) {
+      Logger.log('      ' + d.from + ' -> ' + d.to + '   x ' + d.rows);
+    });
+  });
+  check('ALL gives uplift mode', pvAll.mode === 'PCT');
+  check('ALL spans more than one charge type', pvAll.groups.length > 1);
+  check('ALL includes the base rate',
+        pvAll.groups.some(function (g) { return g.chargeType === 'BASE'; }));
+  check('every uplift is the entered percentage of its own current value',
+        pvAll.groups.every(function (g) {
+          return g.distinct.every(function (d) {
+            return Math.abs(d.to - Math.round(d.from * 1.06 * 1000000) / 1000000) < 1e-9; });
+        }));
+  check('an uplift of -100% or worse is refused', (function () {
+    try { bulkUpdateRates(Object.assign({}, allReq, { value: -100 })); return false; }
+    catch (e) { return true; }
+  })());
 
-  // ---- 5. apply, verify, restore -----------------------------------------
-  const CAP = 25;
-  if (pv.count > CAP) {
+  // ---- 6. apply, verify, restore -----------------------------------------
+  const CAP = 40;
+  if (pvAll.count > CAP) {
     Logger.log('');
-    Logger.log('SKIPPING THE WRITE — this selection matches ' + pv.count + ' rows, more');
-    Logger.log('than the ' + CAP + ' this diagnostic is willing to touch. The preview half');
-    Logger.log('passed. Narrow the seed data, or do the write half from the app.');
+    Logger.log('SKIPPING THE WRITE — the ALL selection matches ' + pvAll.count + ' rows, more');
+    Logger.log('than the ' + CAP + ' this diagnostic is willing to touch. Every preview check');
+    Logger.log('above passed. Do the write half from the app instead.');
     return summariseBulkTest_(checks, null);
   }
 
   Logger.log('');
-  Logger.log('--- snapshot, apply, verify, restore ---');
-  invalidateSheetCache_(t.sheet);
-  const snapshot = getAllData_(t.sheet).map(function (r) { return padRow_(r, width); });
-  const beforeById = {};
-  for (let i = 1; i < snapshot.length; i++) {
-    beforeById[safeInt(snapshot[i][C.Surcharge_Rate_ID])] = snapshot[i];
-  }
+  Logger.log('--- snapshot, apply +6% to ALL, verify, restore ---');
+  const tabs = [{ key: 'RATE_BASE', sheet: SHEET.RATE_BASE,
+                  width: TABLES.RATE_BASE.headers.length, idCol: COL.RATE_BASE.Rate_ID },
+                { key: 'RATE_SURCHARGE', sheet: SHEET.RATE_SURCHARGE,
+                  width: TABLES.RATE_SURCHARGE.headers.length,
+                  idCol: COL.RATE_SURCHARGE.Surcharge_Rate_ID }];
+  tabs.forEach(function (tb) {
+    invalidateSheetCache_(tb.sheet);
+    tb.snapshot = getAllData_(tb.sheet).map(function (r) { return padRow_(r, tb.width); });
+    tb.before = {};
+    for (let i = 1; i < tb.snapshot.length; i++) {
+      tb.before[safeInt(tb.snapshot[i][tb.idCol])] = tb.snapshot[i];
+    }
+    Logger.log('  snapshotted ' + tb.sheet + ': ' + (tb.snapshot.length - 1) + ' rows');
+  });
   const auditBefore = Math.max(getSheet_(SHEET.AUDIT_LOG).getLastRow() - 1, 0);
-  Logger.log('  snapshotted ' + (snapshot.length - 1) + ' rows');
 
-  const res = bulkUpdateRates(Object.assign({}, req,
-                { preview: false, planKey: pv.planKey }));
+  const res = bulkUpdateRates(Object.assign({}, allReq,
+                { preview: false, planKey: pvAll.planKey }));
   Logger.log('  batch reference            : ' + res.batchRef);
-  Logger.log('  periods closed             : ' + res.rowsClosed);
-  Logger.log('  rows created               : ' + res.rowsCreated);
-  check('one new row per matched row', res.rowsCreated === pv.count);
+  Logger.log('  periods closed / created   : ' + res.rowsClosed + ' / ' + res.rowsCreated);
+  res.groups.forEach(function (g) { Logger.log('    ' + g.chargeType + ': ' + g.written); });
+  check('one new row per planned row', res.rowsCreated === pvAll.count);
   check('a batch reference was issued', /^BULK-\d{8}-\d{6}$/.test(String(res.batchRef)));
+  check('both rate tables were written',
+        res.groups.some(function (g) { return g.chargeType === 'BASE'; }) &&
+        res.groups.some(function (g) { return g.chargeType !== 'BASE'; }));
 
-  invalidateSheetCache_(t.sheet);
-  const after = getAllData_(t.sheet).map(function (r) { return padRow_(r, width); });
-  const fresh = [];
-  for (let i = 1; i < after.length; i++) {
-    if (!beforeById[safeInt(after[i][C.Surcharge_Rate_ID])]) fresh.push(after[i]);
-  }
-  check('the new rows are on the sheet', fresh.length === pv.count);
-  check('every new row carries the value asked for',
-        fresh.length > 0 && fresh.every(function (r) { return safeNum(r[C.Value]) === 0.0777; }));
-  check('every new row starts on the date asked for',
-        fresh.length > 0 && fresh.every(function (r) { return fmtDate(r[C.Valid_From]) === '2035-01-01'; }));
-  check('every new row names the batch in Notes',
-        fresh.length > 0 && fresh.every(function (r) {
-          return safeStr(r[C.Notes]).indexOf(res.batchRef) >= 0; }));
-  check('every new row is on the surcharge type asked for',
-        fresh.length > 0 && fresh.every(function (r) {
-          return normKey(r[C.Surcharge_Code]) === seed.code; }));
-  check('percentage surcharges carry no currency',
-        !def || def.valueType !== 'PCT' ||
-        fresh.every(function (r) { return safeStr(r[C.Currency]) === ''; }));
-
-  // Every closed period must end the day before the new one starts.
-  let closedOk = true;
-  for (let i = 1; i < after.length; i++) {
-    const id = safeInt(after[i][C.Surcharge_Rate_ID]);
-    const was = beforeById[id];
-    if (!was) continue;
-    if (fmtDate(was[C.Valid_To]) === fmtDate(after[i][C.Valid_To])) continue;
-    if (fmtDate(after[i][C.Valid_To]) !== '2034-12-31') closedOk = false;
-  }
+  let fresh = 0, valuesOk = true, notesOk = true, closedOk = true;
+  tabs.forEach(function (tb) {
+    invalidateSheetCache_(tb.sheet);
+    const C = COL[tb.key];
+    const after = getAllData_(tb.sheet).map(function (r) { return padRow_(r, tb.width); });
+    const valueCol = tb.key === 'RATE_BASE' ? COL.RATE_BASE.Base_Rate : COL.RATE_SURCHARGE.Value;
+    tb.after = after;
+    for (let i = 1; i < after.length; i++) {
+      const id = safeInt(after[i][tb.idCol]);
+      const was = tb.before[id];
+      if (!was) {
+        fresh++;
+        if (fmtDate(after[i][C.Valid_From]) !== '2035-01-01') valuesOk = false;
+        if (safeStr(after[i][C.Notes]).indexOf(res.batchRef) < 0) notesOk = false;
+        if (safeNum(after[i][valueCol]) < 0) valuesOk = false;
+        continue;
+      }
+      if (fmtDate(was[C.Valid_To]) === fmtDate(after[i][C.Valid_To])) continue;
+      if (fmtDate(after[i][C.Valid_To]) !== '2034-12-31') closedOk = false;
+    }
+  });
+  check('the new rows are on the sheets', fresh === pvAll.count, fresh + ' found');
+  check('every new row starts on the date asked for and is non-negative', valuesOk);
+  check('every new row names the batch in Notes', notesOk);
   check('closed periods end the day before the new one', closedOk);
 
   invalidateSheetCache_(SHEET.AUDIT_LOG);
@@ -1247,35 +1434,38 @@ function testBulkRateUpdate() {
   for (let i = 1; i < auditRows.length; i++) {
     if (safeStr(auditRows[i][A.Detail]).indexOf(res.batchRef) >= 0) stamped++;
   }
-  const auditAdded = Math.max(getSheet_(SHEET.AUDIT_LOG).getLastRow() - 1, 0) - auditBefore;
-  Logger.log('  Audit_Log rows added       : ' + auditAdded +
+  Logger.log('  Audit_Log rows added       : ' +
+             (Math.max(getSheet_(SHEET.AUDIT_LOG).getLastRow() - 1, 0) - auditBefore) +
              ' (' + stamped + ' stamped with the batch reference)');
   check('every audit row is stamped with the batch', stamped >= res.rowsCreated);
 
   // ---- restore ------------------------------------------------------------
-  const restored = [];
-  for (let i = 1; i < after.length; i++) {
-    const id = safeInt(after[i][C.Surcharge_Rate_ID]);
-    const was = beforeById[id];
-    if (was) { restored.push(was); continue; }
-    const row = after[i].slice();
-    row[C.Active] = false;
-    row[C.Notes]  = truncate_('TEST ROW from testBulkRateUpdate — deactivated, safe to delete');
-    restored.push(row);
-  }
-  getSheet_(t.sheet).getRange(2, 1, restored.length, width).setValues(restored);
-  invalidateSheetCache_(t.sheet);
-  Logger.log('  restored ' + (snapshot.length - 1) + ' rows and deactivated ' +
-             fresh.length + ' test row(s)');
-
-  invalidateSheetCache_(t.sheet);
-  const final = getAllData_(t.sheet).map(function (r) { return padRow_(r, width); });
-  let identical = true;
-  for (let i = 1; i < snapshot.length; i++) {
-    for (let j = 0; j < width; j++) {
-      if (displayValue_(snapshot[i][j]) !== displayValue_(final[i][j])) identical = false;
+  tabs.forEach(function (tb) {
+    const C = COL[tb.key];
+    const restored = [];
+    for (let i = 1; i < tb.after.length; i++) {
+      const was = tb.before[safeInt(tb.after[i][tb.idCol])];
+      if (was) { restored.push(was); continue; }
+      const row = tb.after[i].slice();
+      row[C.Active] = false;
+      row[C.Notes]  = truncate_('TEST ROW from testBulkRateUpdate — deactivated, safe to delete');
+      restored.push(row);
     }
-  }
+    getSheet_(tb.sheet).getRange(2, 1, restored.length, tb.width).setValues(restored);
+    invalidateSheetCache_(tb.sheet);
+  });
+  Logger.log('  restored both tables and deactivated ' + fresh + ' test row(s)');
+
+  let identical = true;
+  tabs.forEach(function (tb) {
+    invalidateSheetCache_(tb.sheet);
+    const final = getAllData_(tb.sheet).map(function (r) { return padRow_(r, tb.width); });
+    for (let i = 1; i < tb.snapshot.length; i++) {
+      for (let j = 0; j < tb.width; j++) {
+        if (displayValue_(tb.snapshot[i][j]) !== displayValue_(final[i][j])) identical = false;
+      }
+    }
+  });
   check('every pre-existing row is back exactly as it was', identical);
 
   return summariseBulkTest_(checks, res.batchRef);
@@ -1289,9 +1479,9 @@ function summariseBulkTest_(checks, batchRef) {
              : 'BULK RATE UPDATE WORKING  (' + checks.length + ' checks)');
   if (batchRef) {
     Logger.log('');
-    Logger.log('The table was restored, so the only trace left is history: the Audit_Log');
-    Logger.log('and Rate_Surcharge_Amends rows for batch ' + batchRef + ', plus the');
-    Logger.log('deactivated 2035 test rows. None of it can reach a forecast.');
+    Logger.log('Both tables were restored, so the only trace left is history: the Audit_Log');
+    Logger.log('and *_Amends rows for batch ' + batchRef + ', plus the deactivated 2035');
+    Logger.log('test rows. None of it can reach a forecast.');
   }
   return { ok: !failed.length, checks: checks.length, failed: failed.length,
            batchRef: batchRef };
