@@ -12,7 +12,7 @@ does not apply to it and the plan's phase numbering is untouched.
 
 ## The flow
 
-**Bulk update…** sits next to the Modelling ID dropdown, with the pickers rather than on either
+**Bulk Update** sits next to the Modelling ID dropdown, with the pickers rather than on either
 rate card — it changes many routes at once, so belonging to one card would misdescribe it.
 
 **Step 1 — which charge.** A popup, before anything else, listing Base rate plus every active
@@ -175,7 +175,7 @@ batch reference when they typed nothing.
 |---|---|
 | `rates.js` | `assertNoOverlapIn_` and `precedingPeriodCloses_` extracted from the single-save path; `dimensionMatches_`, `resolveDimensionTargets_`, `describeDimensions_`, `activeSurchargeCodes_`, `listChargeTypes`, `bulkRateShape_`, `chargeTypeGroups_`, `validateChargeValue_`, `roundRate_`, `planBulkRateUpdate_`, `distinctMoves_`, `planKey_`, `bulkUpdateRates`, `applyBulkRateUpdate_`, `describeMove_`, `describeChange_`, `bulkRowCurrency_`, `bulkBatchRef_`, `padRow_`, `testBulkRateUpdate` added |
 | `audit.js` | `recordChangesBatch_` takes an optional `detail`, stamped on every audit row it writes |
-| `index.html` | **Bulk update…** moved to the picker row; charge-type popup, dimension form and confirmation; `cfg.body`, `cfg.afterRender` and `saveLabel:null` support in `openForm`; Batch column in the change log |
+| `index.html` | **Bulk Update** moved to the picker row; charge-type popup, dimension form and confirmation; `cfg.body`, `cfg.afterRender` and `saveLabel:null` support in `openForm`; Batch column in the change log |
 
 `bulkRateChange` is **left alone**. It is the older carrier / High-Level-ID-scoped bulk uplift,
 still unreachable from the UI (finding **U1**), and reconciling the two belongs with U1.
@@ -246,7 +246,7 @@ not complete — read step 2's log before doing anything else.
 
 Rates → any segment.
 
-**Pass:** **Bulk update…** sits on the same row as the High Level ID and Modelling ID dropdowns,
+**Pass:** **Bulk Update** sits on the same row as the High Level ID and Modelling ID dropdowns,
 aligned with them, not in either card header.
 
 Click it.
@@ -257,7 +257,7 @@ only Cancel. Pressing Escape or clicking outside closes the whole thing without 
 
 ### 6. App → set-to mode on one surcharge
 
-**Bulk update…** → **Fuel surcharge**. Then:
+**Bulk Update** → **Fuel surcharge**. Then:
 
 - Brand, country, treatment, WL split: leave as **All** · Method: **RM24** · Class: **Letter**
 - Effective from: the 1st of a month a few months out · Until: tick **No end date**
@@ -279,7 +279,7 @@ Letter, is untouched.
 
 ### 7. App → uplift mode across all charge types
 
-**Bulk update…** → **All charge types** → leave every dimension as All → dates a few months out →
+**Bulk Update** → **All charge types** → leave every dimension as All → dates a few months out →
 **Change every charge by: 6 %** → **Preview**.
 
 **Pass:** the confirmation lists several charge types, each with its own Now and Becomes — the base
@@ -310,7 +310,7 @@ nothing is written.
 
 ### 10. App → a selection matching nothing
 
-**Bulk update…** → any charge → Method set to something no route uses → **Preview**.
+**Bulk Update** → any charge → Method set to something no route uses → **Preview**.
 
 **Pass:** a "Nothing matches" dialogue giving the counts and explaining that a bulk update never
 creates a rate for a route that has none. Its button returns you to the dimension form with your
