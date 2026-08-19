@@ -221,3 +221,221 @@ function runEngineUnitTests() {
   Logger.log(fail ? (fail + ' FAILURES, ' + pass + ' passed') : ('ALL ' + pass + ' TESTS PASSED'));
   return { pass: pass, fail: fail };
 }
+
+/**
+ * Read the legacy workbook's own "Total Postage" formula, straight from the cells.
+ *
+ * Read-only, and against the SOURCE workbook rather than this project's spreadsheet.
+ * It exists to settle by evidence what that column actually combines, rather than
+ * inferring it from the parity test's column comment.
+ *
+ * Every formula in the column is normalised (row numbers stripped) and grouped, so
+ * a formula that differs for some rows and not others shows up as a second pattern
+ * instead of hiding behind whichever rows a sample happened to pick.
+ */
+function inspectLegacyTotalPostage() {
+  requireMaintenance_();
+  Logger.log('=== LEGACY "TOTAL POSTAGE" FORMULA ===');
+
+  const id = sourceSpreadsheetId_();
+  Logger.log('  source workbook : ' + id);
+  let ss;
+  try {
+    ss = SpreadsheetApp.openById(id);
+  } catch (e) {
+    Logger.log('  CANNOT OPEN: ' + e.message);
+    Logger.log('  Run showEnvironment() to see which workbook this is pointed at.');
+    return { ok: false, reason: 'cannot open' };
+  }
+  Logger.log('  file name       : ' + ss.getName());
+
+  let tabName;
+  try {
+    tabName = resolveSourceTab_('Output');
+  } catch (e) {
+    Logger.log('  no Output tab: ' + e.message);
+    Logger.log('  tabs present: ' + ss.getSheets().map(s => s.getName()).join(', '));
+    return { ok: false, reason: 'no Output tab' };
+  }
+  const sh = ss.getSheetByName(tabName);
+  Logger.log('  tab             : ' + tabName + '  (gid ' + sh.getSheetId() + ')');
+
+  const lastRow = sh.getLastRow(), lastCol = sh.getLastColumn();
+  Logger.log('  used range      : ' + lastRow + ' rows x ' + lastCol + ' cols');
+  if (lastRow < 2) { Logger.log('  no data rows.'); return { ok: false }; }
+
+  // ---- 1. the actual column layout ---------------------------------------
+  Logger.log('');
+  Logger.log('--- header row, as it really is ---');
+  const headers = sh.getRange(1, 1, 1, lastCol).getValues()[0];
+  headers.forEach(function (h, i) {
+    Logger.log('  ' + colLetter_(i + 1) + '  [' + i + ']  ' + safeStr(h));
+  });
+
+  // ---- 2. which column holds the total ------------------------------------
+  // Prefer a header that mentions postage/total/cost; fall back to index 7,
+  // which is where runParityTest expects it.
+  let col = -1;
+  for (let i = 0; i < headers.length; i++) {
+    if (/postage|total|cost/i.test(safeStr(headers[i]))) { col = i; break; }
+  }
+  if (col < 0) {
+    col = 7;
+    Logger.log('');
+    Logger.log('  No header matched postage/total/cost. Falling back to index 7 (' +
+               colLetter_(8) + '), which is what runParityTest reads.');
+  }
+  Logger.log('');
+  Logger.log('--- the total column ---');
+  Logger.log('  column          : ' + colLetter_(col + 1) + '  [' + col + ']  "' +
+             safeStr(headers[col]) + '"');
+  Logger.log('  runParityTest reads index 7 (' + colLetter_(8) + ') — ' +
+             (col === 7 ? 'same column' : 'DIFFERENT COLUMN, worth understanding'));
+
+  const n = lastRow - 1;
+  const formulas = sh.getRange(2, col + 1, n, 1).getFormulas();
+  const r1c1s   = sh.getRange(2, col + 1, n, 1).getFormulasR1C1();
+  const values  = sh.getRange(2, col + 1, n, 1).getValues();
+
+  // ---- 3. distinct formula patterns across the whole column ---------------
+  const patterns = {};
+  let blank = 0, constant = 0;
+  for (let i = 0; i < n; i++) {
+    const f = safeStr(formulas[i][0]);
+    if (!f) {
+      if (safeStr(values[i][0]) === '') blank++; else constant++;
+      continue;
+    }
+    // strip row numbers so A2/A3/A4 collapse to one shape
+    const shape = f.replace(/(\$?[A-Z]{1,3}\$?)\d+/g, '$1#');
+    if (!patterns[shape]) patterns[shape] = { rows: [], example: f, r1c1: safeStr(r1c1s[i][0]) };
+    patterns[shape].rows.push(i + 2);
+  }
+
+  const keys = Object.keys(patterns);
+  Logger.log('');
+  Logger.log('--- formula patterns in ' + colLetter_(col + 1) + '2:' +
+             colLetter_(col + 1) + lastRow + ' ---');
+  Logger.log('  data rows            : ' + n);
+  Logger.log('  distinct patterns    : ' + keys.length);
+  Logger.log('  hardcoded values     : ' + constant + '   (no formula, a number typed in)');
+  Logger.log('  blank                : ' + blank);
+
+  if (!keys.length) {
+    Logger.log('');
+    Logger.log('  THERE ARE NO FORMULAS IN THIS COLUMN — the values are static.');
+    Logger.log('  That means the workbook itself does not show how the figure was');
+    Logger.log('  built, and the calculation has to be read from the tabs that feed');
+    Logger.log('  it, or taken as given. Sample of the values:');
+    for (let i = 0; i < Math.min(n, 5); i++) {
+      Logger.log('    row ' + (i + 2) + ': ' + safeStr(values[i][0]));
+    }
+  }
+
+  keys.sort(function (a, b) { return patterns[b].rows.length - patterns[a].rows.length; });
+  keys.slice(0, 6).forEach(function (k, idx) {
+    const p = patterns[k];
+    Logger.log('');
+    Logger.log('  pattern ' + (idx + 1) + ' — ' + p.rows.length + ' row(s), e.g. row ' + p.rows[0]);
+    Logger.log('    A1   : ' + p.example);
+    Logger.log('    R1C1 : ' + p.r1c1);
+    const refs = referencedTabs_(p.example);
+    Logger.log('    refers to tabs: ' + (refs.length ? refs.join(', ') : '(none — same sheet only)'));
+  });
+  if (keys.length > 6) Logger.log('');
+  if (keys.length > 6) Logger.log('  (' + (keys.length - 6) + ' further pattern(s) not shown)');
+
+  // ---- 4. a few named rows, in case row type matters ---------------------
+  // Chosen to span the things that could plausibly change the formula: a '*'
+  // WL split against a named one, and a peak month against an ordinary one.
+  Logger.log('');
+  Logger.log('--- representative rows, by row type ---');
+  const grid = sh.getRange(2, 1, n, Math.min(lastCol, 8)).getValues();
+  const picks = [], seen = {};
+  function pick(why, i) {
+    if (i < 0 || i >= n || seen[i]) return;
+    seen[i] = true; picks.push({ why: why, i: i });
+  }
+  pick('first data row', 0);
+  pick('last data row', n - 1);
+  for (let i = 0; i < n; i++) {
+    const wl = safeStr(grid[i][5]), dateId = safeStr(grid[i][1]);
+    const month = dateId.length >= 6 ? dateId.slice(4, 6) : '';
+    if (wl === '*' && !seen.wlStar) { seen.wlStar = 1; pick("WL split '*'", i); }
+    if (wl && wl !== '*' && !seen.wlNamed) { seen.wlNamed = 1; pick('WL split named (' + wl + ')', i); }
+    if ((month === '11' || month === '12' || month === '01') && !seen.peak) {
+      seen.peak = 1; pick('peak month (' + dateId + ')', i);
+    }
+    if (month && month !== '11' && month !== '12' && month !== '01' && !seen.normal) {
+      seen.normal = 1; pick('non-peak month (' + dateId + ')', i);
+    }
+  }
+  picks.forEach(function (p) {
+    const r = grid[p.i];
+    Logger.log('  ' + p.why + ' — sheet row ' + (p.i + 2));
+    Logger.log('    HLID ' + safeStr(r[0]) + '  DateID ' + safeStr(r[1]) +
+               '  ' + safeStr(r[2]) + '/' + safeStr(r[3]) + '/' + safeStr(r[4]) +
+               '/' + safeStr(r[5]));
+    Logger.log('    value   : ' + safeStr(values[p.i][0]));
+    Logger.log('    formula : ' + (safeStr(formulas[p.i][0]) || '(none — static value)'));
+  });
+
+  // ---- 5. the same figure out of this project's engine -------------------
+  Logger.log('');
+  Logger.log('--- what the engine produces for those same rows ---');
+  Logger.log('  (forecastRatePerOrder, which is what runParityTest compares to');
+  Logger.log('   the workbook column above)');
+  let mine = null;
+  try {
+    const result = computeModel_(loadEngineInput_(1));
+    mine = {};
+    result.outputRows.forEach(function (r) { mine[r.hlId + '|' + r.dateId] = r.forecastRatePerOrder; });
+  } catch (e) {
+    Logger.log('  could not run the engine: ' + e.message);
+  }
+  if (mine) {
+    picks.forEach(function (p) {
+      const r = grid[p.i];
+      const key = safeInt(r[0]) + '|' + safeInt(r[1]);
+      const theirs = safeNum(values[p.i][0]);
+      const ours = mine[key];
+      const d = (ours === undefined) ? null : Math.abs(ours - theirs);
+      Logger.log('  HLID ' + safeStr(r[0]) + ' DateID ' + safeStr(r[1]) +
+                 '  workbook ' + theirs.toFixed(6) +
+                 '  engine ' + (ours === undefined ? '(no row)' : ours.toFixed(6)) +
+                 (d === null ? '' : '  diff ' + d.toExponential(2) +
+                   (d <= PARITY_TOLERANCE ? '  MATCH' : '  DIFFERS')));
+    });
+  }
+
+  Logger.log('');
+  Logger.log('Read the patterns above against engine.gs computeModel_, which does:');
+  Logger.log('  rate         = base * (1 + sum of PCT surcharges) + sum of AMT surcharges');
+  Logger.log('  methodMix    = mixCC * ccShare + mixAmbient * (1 - ccShare)');
+  Logger.log('  lpMix        = letterMix if the route is LETTER, else 1 - letterMix');
+  Logger.log('  contribution = rate * methodMix * lpMix,  summed over every route');
+  Logger.log('                 in the segment -> Forecast_Rate_Per_Order');
+  Logger.log('');
+  Logger.log('Nothing was changed. This function only reads.');
+
+  return { ok: true, tab: tabName, totalColumn: colLetter_(col + 1),
+           header: safeStr(headers[col]), dataRows: n,
+           distinctPatterns: keys.length, hardcoded: constant, blank: blank };
+}
+
+/** 1 -> A, 27 -> AA. Local to this diagnostic. */
+function colLetter_(n) {
+  let s = '';
+  while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = (n - m - 1) / 26; }
+  return s;
+}
+
+/** Tab names a formula refers to, so the inputs it reaches are visible at a glance. */
+function referencedTabs_(formula) {
+  const out = {}, f = String(formula || '');
+  const quoted = /'([^']+)'!/g, plain = /(?:^|[^A-Za-z0-9_'!])([A-Za-z_][A-Za-z0-9_ ]*)!/g;
+  let m;
+  while ((m = quoted.exec(f))) out[m[1]] = 1;
+  while ((m = plain.exec(f))) out[m[1]] = 1;
+  return Object.keys(out);
+}
