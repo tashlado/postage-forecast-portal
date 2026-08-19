@@ -34,12 +34,40 @@ header{background:var(--surface);border-bottom:1px solid var(--line);position:st
    .hlogo so the flex gap between logo and name is tighter than the header's. */
 .hlogo{display:flex;align-items:center;gap:9px}
 .hlogo .pname{font-size:13px;font-weight:500;color:var(--ink);white-space:nowrap}
-nav{display:flex;gap:2px;flex:1;overflow-x:auto}
-nav button{padding:7px 11px;font-size:13px;color:var(--ink-3);border-radius:6px 6px 0 0;white-space:nowrap}
-nav button:hover{color:var(--ink);background:var(--bg)}
-nav button.on{color:var(--ink);font-weight:500;box-shadow:inset 0 -2px 0 var(--brand)}
+/* overflow:hidden, not auto: the row must never grow a scrollbar, and scrollWidth
+   against clientWidth is how fitNav decides what to collapse. The More menu lives
+   outside nav for that reason — inside, overflow:hidden would clip it. */
+nav{display:flex;gap:2px;flex:1;min-width:0;overflow:hidden}
+nav button,.navmore>button{padding:7px 11px;font-size:13px;color:var(--ink-3);
+       border-radius:6px 6px 0 0;white-space:nowrap}
+nav button:hover,.navmore>button:hover{color:var(--ink);background:var(--bg)}
+nav button.on,.navmore>button.on{color:var(--ink);font-weight:500;
+       box-shadow:inset 0 -2px 0 var(--brand)}
+nav [hidden]{display:none}
+nav.scrolls{overflow-x:auto}
+.navmore{position:relative;flex:0 0 auto}
+.navmore[hidden]{display:none}
+.navmenu{position:absolute;top:calc(100% + 4px);left:0;min-width:170px;z-index:30;
+       background:var(--surface);border:1px solid var(--line);border-radius:10px;
+       box-shadow:0 12px 32px rgba(11,11,15,.16);padding:4px;display:flex;
+       flex-direction:column;gap:2px}
+.navmenu[hidden]{display:none}
+.navmenu button{text-align:left;padding:7px 10px;font-size:13px;border-radius:7px;
+       color:var(--ink-2);white-space:nowrap}
+.navmenu button:hover{background:var(--bg);color:var(--ink)}
+.navmenu button.on{color:var(--ink);font-weight:500;background:var(--brand-tint)}
 .hactions{display:flex;align-items:center;gap:6px}
-.hright{display:flex;align-items:center;gap:14px;font-size:12px;color:var(--ink-3);white-space:nowrap}
+.hright{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--ink-3);white-space:nowrap}
+/* One chip, never two. Amber and green follow .badge.amber's pairing of a tint
+   with an existing ink token. */
+.chip{border-radius:10px;padding:2px 9px;font-size:11px;white-space:nowrap;
+      background:var(--bg);color:var(--ink-3);border:1px solid transparent}
+.chip.green{background:#E7F5EF;color:var(--ok)}
+.chip.amber{background:#FFF4E0;color:var(--warn)}
+.chip.err{background:#FDEBED;color:var(--err)}
+.avatar{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;
+      border-radius:50%;background:var(--brand-tint);color:var(--brand-lo);
+      font-size:11px;font-weight:500;letter-spacing:.02em;cursor:default}
 .dot{width:8px;height:8px;border-radius:50%;display:inline-block;vertical-align:middle;margin-right:6px}
 .dot.ok{background:var(--ok)} .dot.busy{background:var(--warn);animation:pulse 1s infinite}
 .dot.err{background:var(--err)}
@@ -135,10 +163,13 @@ input.bad{border-color:var(--err);background:#FFF6F7}
       <span class="pname">Postage Forecast</span>
     </div>
     <nav id="nav"></nav>
+    <div class="navmore" id="navMore" hidden>
+      <button id="navMoreBtn" aria-haspopup="true" aria-expanded="false">More</button>
+      <div class="navmenu" id="navMenu" hidden></div>
+    </div>
     <div id="hactions" class="hactions"></div>
     <div class="hright">
-      <span id="saveState"><span class="dot ok"></span>Saved</span>
-      <span id="pending"></span>
+      <span class="chip" id="status">Loading</span>
       <span id="who"></span>
     </div>
   </div>
@@ -184,11 +215,66 @@ var TABS = [
    Server calls, with the save indicator wired in automatically
    =================================================================== */
 var inflight = 0;
+
+/**
+ * The header's one status chip.
+ *
+ * It carries two unrelated facts that used to have an element each: whether your
+ * last write reached the spreadsheet, and whether the forecast has been published
+ * since the last change. They cannot share one element as raw markup, because
+ * their writers are independent and interleave — setSave fires on every non-quiet
+ * server call, renderStatus only when status data refreshes, so whichever wrote
+ * last would erase the other. So both are state setters now, and this is the only
+ * thing that touches the element.
+ *
+ * A write in flight or a failed write wins, because that is the more urgent and
+ * the more perishable of the two; the publish state is what shows at rest. Never
+ * both at once.
+ *
+ * A failed save shows "Not saved" with the server's message on hover rather than
+ * printing the whole message into the header, which is part of what made the row
+ * overflow. showError still puts it in the page (finding U6 — a failed save must
+ * leave a visible trace).
+ */
+var saveState = 'ok', saveMsg = '';
+
 function setSave(state, msg){
-  var el = document.getElementById('saveState');
-  if(state==='busy') el.innerHTML = '<span class="dot busy"></span>Saving…';
-  else if(state==='err') el.innerHTML = '<span class="dot err"></span>'+(msg||'Not saved');
-  else el.innerHTML = '<span class="dot ok"></span>Saved';
+  saveState = state; saveMsg = msg || '';
+  renderStatusChip();
+}
+
+function renderStatusChip(){
+  var el = document.getElementById('status');
+  if(!el) return;
+  var cls = 'chip', text, tip;
+
+  if(saveState === 'busy'){
+    cls += ''; text = 'Saving…'; tip = 'Writing to the spreadsheet';
+  } else if(saveState === 'err'){
+    cls += ' err'; text = 'Not saved';
+    tip = saveMsg || 'The last change did not save.';
+  } else {
+    var n = (S.status && S.status.pendingChanges) || 0;
+    var published = !!(S.status && S.status.lastRun);
+    if(n){
+      cls += ' amber';
+      text = n + ' unpublished';
+      tip = n + ' change' + (n===1?'':'s') + ' made since the forecast was last published.';
+    } else if(published){
+      cls += ' green'; text = 'Published';
+      tip = 'The published forecast matches the current inputs.';
+    } else {
+      cls += ' amber'; text = 'Not published';
+      tip = 'The forecast has never been published.';
+    }
+  }
+
+  el.className = cls;
+  el.textContent = text;
+  el.title = tip;
+  /* The chip's width changes with its text, which changes how much room the tab
+     row has. Re-fit rather than let a longer chip push the tabs into overflow. */
+  fitNav();
 }
 function call(fn, args, onOk, onErr, quiet){
   if(!quiet){ inflight++; setSave('busy'); }
@@ -378,10 +464,16 @@ function boot(){
     S.sel.hlId = S.hlIds.length ? S.hlIds[0].id : null;
     S.sel.asAt = S.config.horizonStart;
 
-    document.getElementById('who').textContent = S.user.name+' · '+S.user.role;
+    var who=document.getElementById('who');
+    who.innerHTML='<span class="avatar" id="whoAvatar"></span>';
+    var av=document.getElementById('whoAvatar');
+    av.textContent=initialsOf(S.user.name);
+    av.title=S.user.name+' · '+S.user.role;
     document.getElementById('boot').style.display='none';
     document.getElementById('app').style.display='block';
-    renderNav(); renderHeaderActions(); renderStatus(); renderAll();
+    /* Actions and the chip first: renderNav measures the room left over, and a nav
+       measured before they exist concludes everything fits and then overflows. */
+    renderHeaderActions(); renderStatus(); renderNav(); renderAll();
 
     call('loadAllAppData', [], function(d){
       S.rateBase=d.rateBase; S.rateSurcharge=d.rateSurcharge;
@@ -397,15 +489,136 @@ function boot(){
   }, true);
 }
 
+/**
+ * The tab row, which collapses rather than scrolls.
+ *
+ * These four are always on the bar; everything else moves into More, from the
+ * right, only as far as it has to. At a width that fits all eight, More disappears
+ * and nothing is collapsed.
+ */
+var NAV_ALWAYS = ['dashboard', 'rates', 'mixes', 'output'];
+
+function navTabs(){
+  return TABS.filter(function(t){ return !t[2] || can(t[2]); });
+}
+
+/* One place decides what a tab click means, so a tab in the bar and the same tab
+   in the More menu cannot drift apart. */
+function selectTab(key){
+  S.screen = key;
+  closeNavMenu();
+  renderNav();
+  renderAll();
+}
+
 function renderNav(){
-  var n=document.getElementById('nav');
-  n.innerHTML = TABS.filter(function(t){ return !t[2] || can(t[2]); })
-    .map(function(t){
-      return '<button data-s="'+t[0]+'" class="'+(S.screen===t[0]?'on':'')+'">'+t[1]+'</button>';
-    }).join('');
-  Array.prototype.forEach.call(n.querySelectorAll('button'), function(b){
-    b.onclick=function(){ S.screen=b.getAttribute('data-s'); renderNav(); renderAll(); };
+  var n = document.getElementById('nav');
+  if(!n) return;
+  n.innerHTML = navTabs().map(function(t){
+    return '<button data-s="' + t[0] + '" class="' + (S.screen===t[0] ? 'on' : '') + '">' +
+           esc(t[1]) + '</button>';
+  }).join('');
+  Array.prototype.forEach.call(n.querySelectorAll('button[data-s]'), function(b){
+    b.onclick = function(){ selectTab(b.getAttribute('data-s')); };
   });
+
+  var mb = document.getElementById('navMoreBtn');
+  if(mb) mb.onclick = function(e){ e.stopPropagation(); toggleNavMenu(); };
+  fitNav();
+}
+
+/**
+ * Hide tabs into More until the row stops overflowing.
+ *
+ * Measured rather than guessed at a breakpoint, because the room available depends
+ * on the header's other contents — the two action buttons and a status chip whose
+ * width changes with its text. Everything is shown first, so a window that grows
+ * gets its tabs back.
+ */
+function fitNav(){
+  var n = document.getElementById('nav');
+  var more = document.getElementById('navMore');
+  var menu = document.getElementById('navMenu');
+  if(!n || !more || !menu) return;
+
+  var tabs = Array.prototype.slice.call(n.querySelectorAll('button[data-s]'));
+  tabs.forEach(function(b){ b.hidden = false; });
+  more.hidden = true;
+  n.classList.remove('scrolls');
+  if(n.scrollWidth <= n.clientWidth) { closeNavMenu(); menu.innerHTML = ''; return; }
+
+  /* More itself takes room, so reveal it before measuring what still has to go. */
+  more.hidden = false;
+  var moved = [];
+  for(var i = tabs.length - 1; i >= 0 && n.scrollWidth > n.clientWidth; i--){
+    if(NAV_ALWAYS.indexOf(tabs[i].getAttribute('data-s')) >= 0) continue;
+    tabs[i].hidden = true;
+    moved.unshift(tabs[i].getAttribute('data-s'));
+  }
+
+  if(!moved.length){
+    /* Only the always-visible four are left and they still do not fit. Collapsing
+       further is not allowed, so let them be tight rather than hide More over an
+       empty menu. */
+    more.hidden = true;
+    closeNavMenu();
+    menu.innerHTML = '';
+    if(n.scrollWidth > n.clientWidth) n.classList.add('scrolls');
+    return;
+  }
+
+  var labels = {};
+  navTabs().forEach(function(t){ labels[t[0]] = t[1]; });
+  menu.innerHTML = moved.map(function(k){
+    return '<button data-ms="' + k + '" class="' + (S.screen===k ? 'on' : '') + '">' +
+           esc(labels[k] || k) + '</button>';
+  }).join('');
+  Array.prototype.forEach.call(menu.querySelectorAll('button[data-ms]'), function(b){
+    b.onclick = function(e){ e.stopPropagation(); selectTab(b.getAttribute('data-ms')); };
+  });
+
+  /* The active tab may be one of the collapsed ones, in which case More carries the
+     highlight so the bar still shows where you are. */
+  var mb = document.getElementById('navMoreBtn');
+  if(mb) mb.className = (moved.indexOf(S.screen) >= 0) ? 'on' : '';
+
+  /* Everything collapsible has gone and it still does not fit — a viewport narrower
+     than the four pinned tabs. Rather than clip one out of reach, let this one case
+     scroll. It is a safety net, not the normal path. */
+  if(n.scrollWidth > n.clientWidth) n.classList.add('scrolls');
+}
+
+function toggleNavMenu(){
+  var menu = document.getElementById('navMenu');
+  var mb = document.getElementById('navMoreBtn');
+  if(!menu) return;
+  var open = menu.hidden;
+  menu.hidden = !open;
+  if(mb) mb.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
+function closeNavMenu(){
+  var menu = document.getElementById('navMenu');
+  var mb = document.getElementById('navMoreBtn');
+  if(menu) menu.hidden = true;
+  if(mb) mb.setAttribute('aria-expanded', 'false');
+}
+
+/* A click anywhere else, or Escape, closes the menu — the modal builder already
+   sets document.onkeydown while open, so this listens rather than assigns. */
+document.addEventListener('click', closeNavMenu);
+document.addEventListener('keydown', function(e){ if(e.key==='Escape') closeNavMenu(); });
+window.addEventListener('resize', function(){
+  clearTimeout(window._navFit);
+  window._navFit = setTimeout(fitNav, 80);
+});
+
+/** "Tash Lado" -> "TL", with the full name and role on hover. */
+function initialsOf(name){
+  var parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if(!parts.length) return '?';
+  if(parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0].charAt(0) + parts[parts.length - 1].charAt(0)).toUpperCase();
 }
 
 /**
@@ -428,10 +641,11 @@ function renderHeaderActions(){
   /* The "Preview writes nothing" note that used to sit beside these on the Output
      tab moves to a tooltip rather than being lost — the header has no room for it. */
   if(can('runCalc'))       h+='<button class="btn sm" id="hPrev" '+
-    'title="Runs the model and shows what would change. Writes nothing.">Preview changes</button>';
+    'title="Runs the model and shows what would change. Writes nothing.">Preview</button>';
   if(can('publishOutput')) h+='<button class="btn sm primary" id="hPub" '+
     'title="Overwrites OUTPUT and OUTPUT_Detail with a fresh run.">Publish</button>';
   el.innerHTML=h;
+  fitNav();      /* these buttons take room the tab row was measuring against */
 
   var p=el.querySelector('#hPrev');
   if(p) p.onclick=function(){ gotoOutputThen(runPreviewOutput); };
@@ -446,10 +660,7 @@ function renderHeaderActions(){
 /* Switch to Output if we are not there, then act. renderAll is synchronous, so
    #oResult exists by the time fn runs. */
 function gotoOutputThen(fn){
-  if(S.screen!=='output'){
-    S.screen='output';
-    renderNav(); renderAll();
-  }
+  if(S.screen!=='output') selectTab('output');
   fn();
 }
 
@@ -462,11 +673,9 @@ function outputResultEl(){
   return el;
 }
 
-function renderStatus(){
-  var p=document.getElementById('pending');
-  var n=(S.status&&S.status.pendingChanges)||0;
-  p.innerHTML = n ? '<span class="badge amber">'+n+' change'+(n===1?'':'s')+' unpublished</span>' : '';
-}
+/* Kept as a name because three places call it when status data lands; the chip is
+   the only thing that renders it. */
+function renderStatus(){ renderStatusChip(); }
 
 function renderAll(){
   var host=document.getElementById('screens');
@@ -530,8 +739,8 @@ function wireDashboard(){
   Array.prototype.forEach.call(document.querySelectorAll('[data-hl]'),function(tr){
     tr.onclick=function(){
       S.sel.hlId=Number(tr.getAttribute('data-hl'));
-      S.sel.modellingId=null; S.screen='rates';
-      renderNav(); renderAll();
+      S.sel.modellingId=null;
+      selectTab('rates');
     };
   });
 }
