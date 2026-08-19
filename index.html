@@ -38,6 +38,7 @@ nav{display:flex;gap:2px;flex:1;overflow-x:auto}
 nav button{padding:7px 11px;font-size:13px;color:var(--ink-3);border-radius:6px 6px 0 0;white-space:nowrap}
 nav button:hover{color:var(--ink);background:var(--bg)}
 nav button.on{color:var(--ink);font-weight:500;box-shadow:inset 0 -2px 0 var(--brand)}
+.hactions{display:flex;align-items:center;gap:6px}
 .hright{display:flex;align-items:center;gap:14px;font-size:12px;color:var(--ink-3);white-space:nowrap}
 .dot{width:8px;height:8px;border-radius:50%;display:inline-block;vertical-align:middle;margin-right:6px}
 .dot.ok{background:var(--ok)} .dot.busy{background:var(--warn);animation:pulse 1s infinite}
@@ -134,6 +135,7 @@ input.bad{border-color:var(--err);background:#FFF6F7}
       <span class="pname">Postage Forecast</span>
     </div>
     <nav id="nav"></nav>
+    <div id="hactions" class="hactions"></div>
     <div class="hright">
       <span id="saveState"><span class="dot ok"></span>Saved</span>
       <span id="pending"></span>
@@ -379,7 +381,7 @@ function boot(){
     document.getElementById('who').textContent = S.user.name+' · '+S.user.role;
     document.getElementById('boot').style.display='none';
     document.getElementById('app').style.display='block';
-    renderNav(); renderStatus(); renderAll();
+    renderNav(); renderHeaderActions(); renderStatus(); renderAll();
 
     call('loadAllAppData', [], function(d){
       S.rateBase=d.rateBase; S.rateSurcharge=d.rateSurcharge;
@@ -404,6 +406,60 @@ function renderNav(){
   Array.prototype.forEach.call(n.querySelectorAll('button'), function(b){
     b.onclick=function(){ S.screen=b.getAttribute('data-s'); renderNav(); renderAll(); };
   });
+}
+
+/**
+ * Preview changes and Publish, in the header so they are reachable from any tab.
+ *
+ * Neither needs to know which tab you are on — both have always called
+ * previewOutput(1) / publishOutput(1) with a hardcoded scenario. What they do need
+ * is somewhere to put the answer, and that is #oResult, which only exists inside
+ * viewOutput(). So the header buttons switch to the Output tab first and then run
+ * the same action, rendering the same result in the same place. Clicked while
+ * already on Output, they behave exactly as they did before.
+ *
+ * Rendered from boot() once initApp has returned, because the two capability
+ * checks below need S.user.
+ */
+function renderHeaderActions(){
+  var el=document.getElementById('hactions');
+  if(!el) return;
+  var h='';
+  /* The "Preview writes nothing" note that used to sit beside these on the Output
+     tab moves to a tooltip rather than being lost — the header has no room for it. */
+  if(can('runCalc'))       h+='<button class="btn sm" id="hPrev" '+
+    'title="Runs the model and shows what would change. Writes nothing.">Preview changes</button>';
+  if(can('publishOutput')) h+='<button class="btn sm primary" id="hPub" '+
+    'title="Overwrites OUTPUT and OUTPUT_Detail with a fresh run.">Publish</button>';
+  el.innerHTML=h;
+
+  var p=el.querySelector('#hPrev');
+  if(p) p.onclick=function(){ gotoOutputThen(runPreviewOutput); };
+  /* Ask before jumping, not after: declining should leave you where you were. */
+  var pb=el.querySelector('#hPub');
+  if(pb) pb.onclick=function(){
+    if(!confirm('Publish the forecast? This overwrites OUTPUT and OUTPUT_Detail.')) return;
+    gotoOutputThen(runPublishOutput);
+  };
+}
+
+/* Switch to Output if we are not there, then act. renderAll is synchronous, so
+   #oResult exists by the time fn runs. */
+function gotoOutputThen(fn){
+  if(S.screen!=='output'){
+    S.screen='output';
+    renderNav(); renderAll();
+  }
+  fn();
+}
+
+/* Both actions render into #oResult, which is absent while the first data load is
+   still running. Returning null rather than throwing keeps an early click from
+   breaking the page. */
+function outputResultEl(){
+  var el=document.getElementById('oResult');
+  if(!el) showError('Still loading — try again in a moment.');
+  return el;
 }
 
 function renderStatus(){
@@ -1386,57 +1442,60 @@ function outputTable(){
 
 function viewOutput(){
   if(!S.loaded) return '<div class="card"><div class="body">'+loading()+'</div></div>';
-  var h='<div class="card"><div class="body"><div class="row" style="margin:0">';
-  if(can('runCalc')) h+='<button class="btn" id="oPrev">Preview changes</button>';
-  if(can('publishOutput')) h+='<button class="btn primary" id="oPub">Publish</button>';
-  h+='<span class="small muted" style="margin-left:8px">Preview writes nothing.</span>';
-  h+='</div></div></div>';
-  h+='<div id="oResult"></div>';
+  /* Preview changes and Publish live in the header now — see renderHeaderActions.
+     What stays here is where their answer lands. */
+  var h='<div id="oResult"></div>';
   h+='<div class="card"><h2>OUTPUT — forecast rate per order</h2><div class="body" style="padding:0">'+
      outputTable()+'</div></div>';
   return h;
 }
-function wireOutput(){
-  var p=document.getElementById('oPrev');
-  if(p) p.onclick=function(){
-    document.getElementById('oResult').innerHTML='<div class="card"><div class="body">'+loading()+'</div></div>';
-    call('previewOutput',[1],function(r){
-      var h='<div class="card"><h2>Preview — nothing written</h2><div class="body">';
-      if(!r.changes.length && !r.added){ h+='<div class="muted">Nothing would change.</div>'; }
-      else{
-        h+='<div class="small muted" style="margin-bottom:10px">'+r.changes.length+
-           ' row(s) would change, '+r.added+' new, '+r.unchanged+' unchanged.</div>';
-        h+='<table><thead><tr><th>High Level ID</th><th>Month</th><th class="right">Before</th>'+
-           '<th class="right">After</th><th class="right">Change</th></tr></thead><tbody>';
-        r.changes.slice(0,40).forEach(function(c){
-          h+='<tr><td class="small">'+c.hlId+'</td><td>'+esc(c.label)+'</td>'+
-             '<td class="right num">'+money(c.before)+'</td><td class="right num">'+money(c.after)+'</td>'+
-             '<td class="right num '+(c.diff>0?'up':'down')+'">'+(c.diff>0?'+':'')+money(c.diff)+
-             ' ('+c.pct.toFixed(2)+'%)</td></tr>';
-        });
-        h+='</tbody></table>';
-      }
-      h+='</div></div>';
-      document.getElementById('oResult').innerHTML=h;
-    });
-  };
-  var pb=document.getElementById('oPub');
-  if(pb) pb.onclick=function(){
-    if(!confirm('Publish the forecast? This overwrites OUTPUT and OUTPUT_Detail.')) return;
-    document.getElementById('oResult').innerHTML='<div class="card"><div class="body">'+loading()+'</div></div>';
-    call('publishOutput',[1],function(r){
-      if(r.blocked){
-        document.getElementById('oResult').innerHTML=
-          '<div class="card"><div class="body"><div class="err-box">Publish blocked — '+
-          r.validation.counts.ERROR+' validation error(s). Nothing was written.</div></div></div>';
-        return;
-      }
-      document.getElementById('oResult').innerHTML=
-        '<div class="card"><div class="body"><div class="ok-box">Published run '+r.calcRunId+
-        ' — '+r.rows+' rows.</div></div></div>';
-      reloadData();
-    });
-  };
+function wireOutput(){ /* nothing to wire: the actions are in the header */ }
+
+function runPreviewOutput(){
+  var el=outputResultEl();
+  if(!el) return;
+  el.innerHTML='<div class="card"><div class="body">'+loading()+'</div></div>';
+  call('previewOutput',[1],function(r){
+    var h='<div class="card"><h2>Preview — nothing written</h2><div class="body">';
+    if(!r.changes.length && !r.added){ h+='<div class="muted">Nothing would change.</div>'; }
+    else{
+      h+='<div class="small muted" style="margin-bottom:10px">'+r.changes.length+
+         ' row(s) would change, '+r.added+' new, '+r.unchanged+' unchanged.</div>';
+      h+='<table><thead><tr><th>High Level ID</th><th>Month</th><th class="right">Before</th>'+
+         '<th class="right">After</th><th class="right">Change</th></tr></thead><tbody>';
+      r.changes.slice(0,40).forEach(function(c){
+        h+='<tr><td class="small">'+c.hlId+'</td><td>'+esc(c.label)+'</td>'+
+           '<td class="right num">'+money(c.before)+'</td><td class="right num">'+money(c.after)+'</td>'+
+           '<td class="right num '+(c.diff>0?'up':'down')+'">'+(c.diff>0?'+':'')+money(c.diff)+
+           ' ('+c.pct.toFixed(2)+'%)</td></tr>';
+      });
+      h+='</tbody></table>';
+    }
+    h+='</div></div>';
+    var target=document.getElementById('oResult');
+    if(target) target.innerHTML=h;
+  });
+}
+
+/* Assumes the caller has already confirmed — its one caller does, before jumping. */
+function runPublishOutput(){
+  var el=outputResultEl();
+  if(!el) return;
+  el.innerHTML='<div class="card"><div class="body">'+loading()+'</div></div>';
+  call('publishOutput',[1],function(r){
+    var target=document.getElementById('oResult');
+    if(!target) return;
+    if(r.blocked){
+      target.innerHTML=
+        '<div class="card"><div class="body"><div class="err-box">Publish blocked — '+
+        r.validation.counts.ERROR+' validation error(s). Nothing was written.</div></div></div>';
+      return;
+    }
+    target.innerHTML=
+      '<div class="card"><div class="body"><div class="ok-box">Published run '+r.calcRunId+
+      ' — '+r.rows+' rows.</div></div></div>';
+    reloadData();
+  });
 }
 
 /* ===================================================================
