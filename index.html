@@ -1393,10 +1393,19 @@ function viewMixMethod(){
      ['PARCEL','LETTER'].map(function(v){return '<option'+(v===S.sel.lp?' selected':'')+'>'+v+'</option>';}).join('')+
      '</select></div>';
   h+='<div class="field"><label>As at</label><input type="date" id="mAsAt" value="'+esc(S.sel.asAt||'')+'"></div>';
+  /* Bulk update sits with the pickers, not on the grid: it is a change to many
+     grids, and hanging it off the one on screen would suggest otherwise. */
+  if(can('editMixes'))
+    h+='<div class="field" style="justify-content:flex-end">'+
+       '<button class="btn primary" id="bulkMix">Bulk Update</button></div>';
   h+='</div></div></div><div id="mixHost"></div>';
   return h;
 }
 function wireMixMethod(){
+  /* Wired before loadMixGrid below: a bulk change is scoped by its own
+     dimensions, not by whichever grid happens to be showing. */
+  var bm=document.getElementById('bulkMix');
+  if(bm) bm.onclick=function(){ bulkMixForm(); };
   var hl=document.getElementById('mHl');
   if(hl) hl.onchange=function(){ S.sel.hlId=Number(hl.value); loadMixGrid(); };
   ['mReg','mLp','mAsAt'].forEach(function(id){
@@ -1496,6 +1505,231 @@ function saveMixGrid(){
   call('saveMethodMixGrid',[{hlId:mixGrid.hlId,regime:mixGrid.regime,
     letterParcel:mixGrid.letterParcel,validFrom:from,validTo:to,rows:readMixInputs()}],
     function(res){ showOk('Saved '+res.written+' routes.'); loadMixGrid(); reloadData(); });
+}
+
+/* ---- bulk mix update ----
+   saveMethodMixGrid writes the grid on screen. This writes the same mix into
+   many grids at once, chosen by dimension the way a bulk rate change is.
+
+   Three steps, because a mix cannot be asked for in one. WHICH GRIDS first --
+   brand, country, treatment type, WL split, regime and class, every box ticked
+   to begin with. Only then can the form know which carrier-and-method routes
+   those segments actually carry, which is the useful question: not "which of
+   the 35 methods in Dim_Method" but "which of these six do you want to shift".
+   Then THE MIX, which must total 100%. Then the preview, which is the only
+   place a write can be authorised.
+
+   A grid whose routes do not include every method given a non-zero share is
+   refused by the server and named on the preview, never renormalised to fit.
+   Renormalising is the exact failure the 100% guard exists to prevent. */
+
+var BULK_MIX_DIMENSIONS = [
+  { key:'brand',         label:'Brand',          ref:'BRAND' },
+  { key:'geo',           label:'Country',        ref:'GEO' },
+  { key:'treatmentType', label:'Treatment type', ref:'TREATMENT_TYPE' },
+  { key:'wlSplit',       label:'WL split',       ref:'WL_SPLIT' },
+  { key:'regime',        label:'Regime',         ref:'TEMP_REGIME' },
+  { key:'letterParcel',  label:'Class',          ref:'LETTER_PARCEL' }
+];
+
+/* Step 1 — which grids. */
+function bulkMixForm(keep){
+  var prior=keep||{};
+  var fields=BULK_MIX_DIMENSIONS.map(function(d,i){
+    return { key:d.key, label:d.label, type:'checks', value:prior[d.key],
+             options:optsRef(d.ref),
+             hint:i===BULK_MIX_DIMENSIONS.length-1
+                  ? 'Carriers and methods are not narrowed here — you set their '+
+                    'shares on the next page.' : '' };
+  });
+  openForm({
+    title:'Bulk update — delivery method mix',
+    intro:'Choose the grids. The next page asks for the mix to put on them.',
+    saveLabel:'Next',
+    fields:fields,
+    onSave:function(v, done, fail){
+      var dims={};
+      BULK_MIX_DIMENSIONS.forEach(function(d){ dims[d.key]=v[d.key]||''; });
+      call('bulkMixScope',[{dimensions:dims}],function(sc){
+        done();
+        if(!sc.grids) return bulkMixNothing(sc, v);
+        bulkMixValueForm(dims, sc, v, null);
+      }, fail);
+    }
+  });
+}
+
+function bulkMixNothing(sc, raw){
+  openForm({
+    title:'Nothing matches',
+    intro:'That selection matches no grid you can edit.',
+    body:'<table><tbody>'+
+         '<tr><td>Segments matching the dimensions</td><td class="right num">'+
+         sc.segments+'</td></tr>'+
+         '<tr><td>…outside what you can edit</td><td class="right num">'+
+         sc.skippedNoScope+'</td></tr></tbody></table>',
+    saveLabel:'Change the selection',
+    fields:[],
+    onSave:function(v, done){ done(); bulkMixForm(raw); }
+  });
+}
+
+/* Step 2 — the mix. The routes are whatever the chosen grids carry between
+   them, so the list is a handful rather than the whole of Dim_Method. */
+function bulkMixValueForm(dims, sc, raw, keep){
+  var prior=keep||{}, priorMix=prior.mix||{};
+  var b='<table><thead><tr><th>Carrier</th><th>Method</th>'+
+        '<th class="right" style="width:104px">Mix</th>'+
+        '<th class="right">Grids</th></tr></thead><tbody>';
+  sc.routes.forEach(function(r){
+    b+='<tr><td>'+esc(r.carrier)+'</td><td>'+esc(r.method)+'</td>'+
+       '<td class="right"><input type="number" step="0.01" min="0" max="100" '+
+       'class="bmix right num" data-k="'+esc(r.key)+'" '+
+       'style="width:88px;text-align:right" placeholder="0.00" value="'+
+       esc(priorMix[r.key]===undefined?'':priorMix[r.key])+'"></td>'+
+       '<td class="right num muted">'+r.grids+'</td></tr>';
+  });
+  b+='</tbody></table><div class="total" id="bmixTotal"></div>'+
+     '<div class="hint" style="margin-top:6px">A route left blank is set to 0% — '+
+     'a grid that carries it keeps totalling 100% without it.</div>';
+
+  openForm({
+    title:'Bulk update — the mix to apply',
+    intro:sc.grids+' grid'+(sc.grids===1?'':'s')+' across '+sc.segments+
+          ' segment'+(sc.segments===1?'':'s')+'. These percentages replace the '+
+          'mix on every one of them. Nothing is written until you confirm the preview.',
+    body:b,
+    saveLabel:'Preview',
+    fields:[
+      { key:'validFrom', label:'Effective from', type:'date', required:true,
+        value:prior.validFrom||todayOrHorizon(),
+        hint:'Whatever mix is running on each grid is closed off the day before.' },
+      { key:'validTo', label:'Until', type:'date', required:true, openEnded:true,
+        value:prior.validTo||'9999-12-31' },
+      { key:'notes', label:'Note', type:'text', value:prior.notes||'',
+        placeholder:'RM 2026 service change',
+        hint:'Written to every row this creates, alongside the batch reference.' }
+    ],
+    afterRender:function(root){
+      var ins=root.querySelectorAll('.bmix');
+      var tot=root.querySelector('#bmixTotal');
+      if(!ins.length || !tot) return;
+      function sync(){
+        var n=0;
+        Array.prototype.forEach.call(ins,function(i){ n+=Number(i.value)||0; });
+        var good=Math.abs(n-100)<=0.05;
+        tot.className='total '+(good?'good':'bad');
+        tot.innerHTML='Total <strong>'+n.toFixed(2)+'%</strong>'+
+                      (good?'':' — must be 100%');
+      }
+      Array.prototype.forEach.call(ins,function(i){ i.oninput=sync; });
+      sync();
+    },
+    onSave:function(v, done, fail){
+      var mix=[], typed={}, tot=0;
+      Array.prototype.forEach.call(document.querySelectorAll('.bmix'),function(i){
+        var key=i.getAttribute('data-k'), parts=key.split('|');
+        var pctv=Number(i.value)||0;
+        typed[key]=i.value;
+        tot+=pctv;
+        mix.push({ carrier:parts[0], method:parts[1], value:pctv/100 });
+      });
+      /* Checked here as well as on the server: the server is the authority, but
+         a round trip to be told about a typo you can see is a poor way to learn. */
+      if(Math.abs(tot-100)>0.05){
+        return fail('The percentages total '+tot.toFixed(2)+'%. They must total 100%.');
+      }
+      var keepNow={ validFrom:v.validFrom, validTo:v.validTo, notes:v.notes, mix:typed };
+      var req={ dimensions:dims, mix:mix, validFrom:v.validFrom, validTo:v.validTo,
+                notes:v.notes, scenarioId:1, preview:true };
+      call('bulkUpdateMethodMix',[req],function(pv){
+        done();
+        bulkMixConfirm(dims, sc, raw, keepNow, req, pv);
+      }, fail);
+    }
+  });
+}
+
+/* Step 3 — the preview, and the only place a write can be authorised. */
+function bulkMixConfirm(dims, sc, raw, keepNow, req, pv){
+  var word = pv.changing===1 ? '1 grid' : pv.changing+' grids';
+  var b='<table><tbody>'+
+        '<tr><td>Grids to be rewritten</td><td class="right num"><strong>'+
+        pv.changing+'</strong></td></tr>'+
+        '<tr><td>…already on this mix</td><td class="right num">'+pv.unchanged+'</td></tr>'+
+        '<tr><td>Mix rows written</td><td class="right num">'+pv.rowsToWrite+'</td></tr>'+
+        '<tr><td>Effective</td><td class="right num">'+esc(pv.validFrom)+
+        (pv.validTo>='9999-01-01'?' onwards':' to '+esc(pv.validTo))+'</td></tr>'+
+        '</tbody></table>';
+
+  if(pv.sample.length){
+    b+='<table><thead><tr><th>Grid</th><th>Route</th><th class="right">Now</th>'+
+       '<th class="right">Becomes</th></tr></thead><tbody>';
+    pv.sample.forEach(function(g){
+      g.rows.forEach(function(r,i){
+        b+='<tr><td>'+(i===0?esc(g.label):'')+'</td><td>'+esc(r.route)+'</td>'+
+           '<td class="right num muted">'+(r.was===null?'—':pct(r.was))+'</td>'+
+           '<td class="right num">'+pct(r.now)+'</td></tr>';
+      });
+    });
+    b+='</tbody></table>';
+    if(pv.grids>pv.sample.length){
+      b+='<div class="hint">Showing '+pv.sample.length+' of '+pv.grids+
+         ' grids. The rest take the same mix.</div>';
+    }
+  }
+
+  if(pv.refused.length){
+    b+='<div class="warn"><strong>'+pv.refused.length+' grid'+
+       (pv.refused.length===1?'':'s')+' cannot take this mix and will be left '+
+       'alone.</strong> Each is missing a route you gave a share to, so the '+
+       'percentages would land under 100%. Add the route, or give it 0%, or '+
+       'narrow the selection.<br>'+
+       pv.refused.slice(0,6).map(function(r){
+         return esc(r.label)+' — no '+esc(r.missing);
+       }).join('<br>')+
+       (pv.refused.length>6?'<br>…and '+(pv.refused.length-6)+' more':'')+'</div>';
+  }
+  if(pv.skippedNoScope){
+    b+='<div class="warn">'+pv.skippedNoScope+' segment(s) match the dimensions '+
+       'but are outside what you can edit, and were left alone.</div>';
+  }
+  b+='<div class="hint" style="margin-top:8px">Selection — '+esc(pv.selection)+'</div>';
+
+  if(!pv.changing){
+    openForm({
+      title:'Nothing would change',
+      intro:pv.grids?'Every matching grid is already on this mix.'
+                    :'No grid can take this mix.',
+      body:b,
+      saveLabel:'Change the mix',
+      fields:[],
+      onSave:function(v, done){ done(); bulkMixValueForm(dims, sc, raw, keepNow); }
+    });
+    return;
+  }
+
+  openForm({
+    title:'Apply to '+word+'?',
+    intro:'This replaces the delivery method mix on every grid listed. Read the '+
+          'numbers below before confirming.',
+    body:b,
+    saveLabel:'Apply to '+word,
+    fields:[],
+    onSave:function(v, done, fail){
+      var apply={};
+      for(var k in req) if(req.hasOwnProperty(k)) apply[k]=req[k];
+      apply.preview=false; apply.planKey=pv.planKey;
+      call('bulkUpdateMethodMix',[apply],function(res){
+        done();
+        showOk(res.grids+' grid(s) updated as batch '+res.batchRef+' — '+
+               res.written+' mix row(s) created, '+res.cleared+' period(s) closed'+
+               (res.refused?', '+res.refused+' grid(s) left alone':'')+'.');
+        reloadData();
+        if(typeof loadMixGrid==='function') loadMixGrid();
+      }, fail);
+    }
+  });
 }
 
 /* ---- letter / parcel split ---- */
