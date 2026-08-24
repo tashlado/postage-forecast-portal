@@ -169,16 +169,24 @@ input.bad{border-color:var(--err);background:#FFF6F7}
              color:var(--err);border-radius:8px;font-size:13px}
 .inline{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink-2)}
 .inline input[type=checkbox]{width:auto}
-/* ---- tick-box groups: a dimension picked as a set, not as one value ---- */
-.checks{border:1px solid var(--line);border-radius:8px;background:var(--surface)}
-.checks .chead{display:flex;align-items:center;gap:6px;padding:5px 8px;
-       border-bottom:1px solid var(--line);font-size:11px;color:var(--ink-3)}
-.checks .chead .cnt{margin-left:auto}
-.checks .chead button{font:inherit;font-size:11px;color:var(--brand);padding:2px 6px;
-       border-radius:5px;cursor:pointer;background:none;border:1px solid transparent}
-.checks .chead button:hover{background:var(--brand-tint);border-color:var(--line)}
-.checks .clist{display:flex;flex-wrap:wrap;gap:2px 10px;padding:7px 9px;
-       max-height:148px;overflow:auto}
+/* ---- tick-box groups: one collapsed row per dimension, opened to narrow ---- */
+.checks{border:1px solid var(--line);border-radius:8px;background:var(--surface);
+       overflow:hidden}
+.checks>summary{display:flex;align-items:center;gap:8px;padding:8px 11px;
+       cursor:pointer;list-style:none;font-size:13px;color:var(--ink-2)}
+.checks>summary::-webkit-details-marker{display:none}
+.checks>summary:hover{background:var(--bg)}
+.checks>summary:focus-visible{outline:2px solid var(--brand);outline-offset:-2px}
+.checks[open]>summary{border-bottom:1px solid var(--line)}
+.checks .cnt{margin-left:auto;font-size:12px;color:var(--ink-3)}
+.checks .chev{font-size:10px;color:var(--ink-3);transition:transform .12s}
+.checks[open] .chev{transform:rotate(180deg)}
+.checks .cacts{display:flex;gap:6px;padding:8px 11px 0}
+.checks .cacts button{font:inherit;font-size:11px;color:var(--brand);padding:2px 8px;
+       border-radius:5px;cursor:pointer;background:none;border:1px solid var(--line)}
+.checks .cacts button:hover{background:var(--brand-tint)}
+.checks .clist{display:flex;flex-wrap:wrap;gap:3px 10px;padding:8px 11px 10px;
+       max-height:164px;overflow:auto}
 .checks .clist label{display:flex;align-items:center;gap:6px;font-size:12px;
        color:var(--ink-2);cursor:pointer;min-width:calc(50% - 10px)}
 .checks .clist input[type=checkbox]{width:auto;margin:0;flex:none}
@@ -375,13 +383,19 @@ function closeForm(){
 }
 
 /**
- * One dimension rendered as tick boxes rather than as a dropdown.
+ * One dimension as a row that collapses: its name, what is selected, a chevron.
+ *
+ * Six dimensions open at once is a wall of tick boxes for a form whose answer is
+ * usually All, so each starts shut and states its own count — "All 5" reads as an
+ * answer, where five ticked boxes read as work still to do. Opening one is how you
+ * narrow it.
  *
  * Everything is ticked unless the caller passes a list, because All is the useful
  * default for a bulk change and a form that opens on nothing selected invites a
  * change that matches nothing. A list ticks exactly its members, matched
  * case-insensitively so a value round-tripped through the server ticks the box it
- * came from.
+ * came from, and opens the row, since a narrowed dimension is the one thing on
+ * this form worth seeing without a click.
  */
 function checksField(f){
   var sel=f.value, want=null;
@@ -389,19 +403,29 @@ function checksField(f){
     want={};
     sel.forEach(function(v){ want[String(v).toUpperCase()]=1; });
   }
-  var h='<div class="checks" data-ckgroup="'+esc(f.key)+'">';
-  h+='<div class="chead">'+
+  /* The count is written here as well as by the wiring, so a collapsed row is
+     never briefly blank on the way to saying the same thing. */
+  var opts=f.options||[], on0=0;
+  opts.forEach(function(o){
+    var v=(o.value!==undefined?o.value:o);
+    if(!want || want[String(v).toUpperCase()]) on0++;
+  });
+  var h='<details class="checks" data-ckgroup="'+esc(f.key)+'"'+(want?' open':'')+'>';
+  h+='<summary><span>'+esc(f.label)+'</span>'+
+     '<span class="cnt" data-ckcount="'+esc(f.key)+'">'+
+     (on0===opts.length?'All '+opts.length:on0+' of '+opts.length)+'</span>'+
+     '<span class="chev">▾</span></summary>';
+  h+='<div class="cacts">'+
      '<button type="button" data-ckall="'+esc(f.key)+'">All</button>'+
-     '<button type="button" data-cknone="'+esc(f.key)+'">None</button>'+
-     '<span class="cnt" data-ckcount="'+esc(f.key)+'"></span></div>';
+     '<button type="button" data-cknone="'+esc(f.key)+'">None</button></div>';
   h+='<div class="clist">';
-  (f.options||[]).forEach(function(o){
+  opts.forEach(function(o){
     var v=(o.value!==undefined?o.value:o), l=(o.label!==undefined?o.label:o);
     var on = want ? !!want[String(v).toUpperCase()] : true;
     h+='<label><input type="checkbox" data-ck="'+esc(f.key)+'" value="'+esc(v)+'"'+
        (on?' checked':'')+'>'+esc(l)+'</label>';
   });
-  return h+'</div></div>';
+  return h+'</div></details>';
 }
 
 /**
@@ -440,8 +464,13 @@ function openForm(cfg){
   h+='<div class="fields">';
 
   cfg.fields.forEach(function(f){
-    h+='<div class="field"><label for="mf_'+f.key+'">'+esc(f.label)+
-       (f.required?' <span style="color:var(--err)">*</span>':'')+'</label>';
+    h+='<div class="field">';
+    /* A checks row carries its own name in the summary, so a label above it would
+       say everything twice. */
+    if(f.type!=='checks'){
+      h+='<label for="mf_'+f.key+'">'+esc(f.label)+
+         (f.required?' <span style="color:var(--err)">*</span>':'')+'</label>';
+    }
     if(f.type==='select'){
       h+='<select id="mf_'+f.key+'">';
       if(!f.required) h+='<option value=""></option>';
@@ -515,7 +544,7 @@ function openForm(cfg){
       var n=0;
       Array.prototype.forEach.call(boxes,function(b){ if(b.checked) n++; });
       cnt.textContent = n===boxes.length ? 'All '+boxes.length
-                      : (n===0 ? 'none ticked' : n+' of '+boxes.length);
+                      : (n===0 ? 'None' : n+' of '+boxes.length);
       group.className='checks'+(n===0?' none':'');
     }
     Array.prototype.forEach.call(boxes,function(b){ b.onchange=sync; });
@@ -1168,11 +1197,10 @@ function bulkRateForm(chargeType, types, keep){
        ticks exactly what it names. */
     fields.push({ key:d.key, label:d.label, type:'checks', value:prior[d.key],
       options:bulkDimOptions(d),
-      hint:i===0?'Every box starts ticked, which means All. Untick to narrow one '+
-                 'dimension — the others are left alone, so ticking three methods '+
-                 'changes those methods across every treatment type, brand and '+
-                 'country that carries them. Every courier group is always '+
-                 'included.':'' });
+      /* One short line, on the last row rather than the first, where it reads as
+         a footnote to the six instead of a preamble to them. Everything else the
+         rows say themselves. */
+      hint:i===BULK_DIMENSIONS.length-1?'All couriers are always included.':'' });
   });
 
   fields.push({ key:'validFrom', label:'Effective from', type:'date', required:true,
