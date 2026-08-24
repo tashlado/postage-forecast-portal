@@ -383,6 +383,234 @@ function diagnoseActuals(hlId) {
 }
 
 
+/**
+ * Every distinct Treatment Type in the staging extract, and where it lands.
+ *
+ * Reads only. The import collapses ~50 raw treatment strings into the two the
+ * model uses, by testing each against ACTUALS_WL_TREATMENTS — anything that
+ * does not match is Core Rx. That default is silent, and silence is the problem:
+ * a weight-loss row that fails to match is not dropped, it is ADDED to the Core
+ * Rx segment for the same brand and country, where it moves both the volume and
+ * the blended rate (the rate is cost/shipments for the whole segment-month). The
+ * forecast then fails to reconcile on both sides at once, with nothing in the
+ * log to say why.
+ *
+ * So this prints every distinct value with its money attached, biggest first,
+ * and says which bucket today's config puts it in. What it deliberately does NOT
+ * do is guess which of them ought to be weight loss. Nothing in the sheet marks
+ * that, and a guess printed in a log reads like a finding.
+ *
+ * It also lists any High Level ID whose Treatment_Type is not literally WL or
+ * CORE_RX. The importer can only ever produce those two, so any other value is a
+ * segment that can never receive actuals automatically. saveHighLevelId checks
+ * Treatment_Type against Dim_Reference, so such a value cannot be created through
+ * the portal — but migrate.gs writes the column unchecked, and nothing in
+ * validate.gs polices it afterwards.
+ */
+function diagnoseActualsTreatments() {
+  requireMaintenance_();
+  Logger.log('=== ACTUALS IMPORT — TREATMENT TYPES (read-only) ===');
+
+  prewarmSheetCache_([SHEET.ACTUALS_IMPORT, SHEET.HIGH_LEVEL_IDS,
+                      SHEET.DIM_REFERENCE, SHEET.CONFIG]);
+
+  // ---- what the config says today ----------------------------------------
+  const rawCfg = configStr('ACTUALS_WL_TREATMENTS', 'WeightLossGlp1');
+  const wl = wlTreatments_();
+  Logger.log('  Config ACTUALS_WL_TREATMENTS : ' + rawCfg);
+  Logger.log('  counts as weight loss        : ' + Object.keys(wl).sort().join(', '));
+  Logger.log('  (matching ignores case, spaces and punctuation — only the letters');
+  Logger.log('   and digits are compared, so "Weight Loss GLP-1" and "weightlossglp1"');
+  Logger.log('   are the same string as far as the import is concerned.)');
+
+  const rows = getAllData_(SHEET.ACTUALS_IMPORT);
+  if (rows.length < 2) {
+    Logger.log('');
+    Logger.log('  The Actuals_Import tab is empty — paste the extract there first.');
+    return { ok: false, reason: 'empty' };
+  }
+
+  // ---- columns, found the same way the importer finds them ----------------
+  const hdrRaw  = rows[0].map(function (h) { return safeStr(h); });
+  const hdrNorm = hdrRaw.map(normHeader_);
+  function col(candidates, label) {
+    for (let ci = 0; ci < candidates.length; ci++) {
+      const exact = hdrNorm.indexOf(normHeader_(candidates[ci]));
+      if (exact >= 0) return exact;
+    }
+    for (let ci = 0; ci < candidates.length; ci++) {
+      const want = normHeader_(candidates[ci]);
+      for (let hi = 0; hi < hdrNorm.length; hi++) {
+        if (!hdrNorm[hi]) continue;
+        if (hdrNorm[hi].indexOf(want) >= 0 || want.indexOf(hdrNorm[hi]) >= 0) return hi;
+      }
+    }
+    throw new Error('The extract has no ' + label + ' column. Columns found: ' +
+                    hdrRaw.join(' | '));
+  }
+  const cCountry = col(['Country Code', 'Country'], 'country'),
+        cBrand   = col(['Brand'], 'brand'),
+        cTreat   = col(['Treatment Type', 'Treatment'], 'treatment type'),
+        cCount   = col(['Count', 'Shipments', 'Orders'], 'shipment count'),
+        cCost    = col(['Sum of Cost Of Shipping', 'Cost Of Shipping', 'Total Cost', 'Cost'],
+                       'shipping cost');
+  Logger.log('');
+  Logger.log('  columns matched:');
+  [['brand', cBrand], ['country', cCountry], ['treatment', cTreat],
+   ['count', cCount], ['cost', cCost]].forEach(function (x) {
+    Logger.log('    ' + pad_(x[0], 10) + ' -> "' + hdrRaw[x[1]] + '"');
+  });
+
+  // ---- the segments the importer can actually reach -----------------------
+  const hl = getAllData_(SHEET.HIGH_LEVEL_IDS), H = COL.HIGH_LEVEL_IDS;
+  const segExists = {}, oddSegments = [];
+  for (let i = 1; i < hl.length; i++) {
+    const id = safeInt(hl[i][H.High_Level_ID]);
+    if (!id) continue;
+    const tt = normKey(hl[i][H.Treatment_Type]);
+    if (safeBool(hl[i][H.Active])) {
+      segExists[normKey(hl[i][H.Brand]) + '|' + normKey(hl[i][H.Geo]) + '|' + tt] = true;
+    }
+    if (tt !== 'WL' && tt !== 'CORE_RX') {
+      oddSegments.push({ id: id, brand: safeStr(hl[i][H.Brand]),
+                         geo: safeStr(hl[i][H.Geo]), tt: safeStr(hl[i][H.Treatment_Type]),
+                         split: safeStr(hl[i][H.WL_Split]),
+                         active: safeBool(hl[i][H.Active]) });
+    }
+  }
+
+  // ---- every distinct treatment string, with its money --------------------
+  const seen = {};
+  let readRows = 0, blankTreat = 0;
+  for (let i = 1; i < rows.length; i++) {
+    const r = rows[i];
+    const brand = normKey(r[cBrand]), geo = normKey(r[cCountry]);
+    if (!brand || !geo) continue;
+    const n = parseExtractNumber_(r[cCount]);
+    if (!n) continue;                       // the importer skips these too
+    readRows++;
+
+    const raw  = safeStr(r[cTreat]);
+    const norm = raw.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (!norm) blankTreat++;
+    const bucket = wl[norm] ? 'WL' : 'CORE_RX';
+
+    /* Grouped by the NORMALISED value, not the raw one, because normalised is
+       what the config matches on: two spellings differing only in case or
+       punctuation are one thing to classify, and listing them apart would invite
+       putting both in the config where either alone would do. The spellings
+       actually seen are kept, so they can still be recognised below. */
+    const e = seen[norm] || (seen[norm] = { norm: norm, bucket: bucket,
+                                            spellings: {}, rows: 0, count: 0, cost: 0,
+                                            noSeg: 0, noSegCost: 0 });
+    e.spellings[raw] = (e.spellings[raw] || 0) + 1;
+    e.rows++;
+    e.count += n;
+    e.cost  += parseExtractNumber_(r[cCost]);
+    if (!segExists[brand + '|' + geo + '|' + bucket]) {
+      e.noSeg++;
+      e.noSegCost += parseExtractNumber_(r[cCost]);
+    }
+  }
+
+  const list = Object.keys(seen).map(function (k) { return seen[k]; });
+  list.sort(function (a, b) { return b.cost - a.cost; });
+
+  Logger.log('');
+  Logger.log('--- ' + list.length + ' distinct Treatment Type value(s) across ' +
+             readRows + ' usable extract row(s) ---');
+  Logger.log('  ' + pad_('bucket', 8) + '  ' + pad_('rows', 6) + '  ' +
+             pad_('count', 12) + '  ' + pad_('cost', 14) + '  ' +
+             pad_('no seg', 7) + '  treatment type');
+  list.forEach(function (e) {
+    const sp = Object.keys(e.spellings);
+    Logger.log('  ' + pad_(e.bucket, 8) + '  ' + pad_(String(e.rows), 6) + '  ' +
+               pad_(Math.round(e.count).toLocaleString(), 12) + '  ' +
+               pad_('£' + e.cost.toFixed(2), 14) + '  ' +
+               pad_(e.noSeg ? String(e.noSeg) : '-', 7) + '  ' +
+               (sp[0] === '' ? '(blank)' : sp[0]) +
+               (sp.length > 1 ? '   [+' + (sp.length - 1) + ' spelling' +
+                                (sp.length > 2 ? 's' : '') + ']' : ''));
+  });
+
+  /* Only printed when it happens: a value spelled more than one way still needs
+     just one entry in the config, and seeing the variants is how you know that
+     rather than assuming it. */
+  const varied = list.filter(function (e) { return Object.keys(e.spellings).length > 1; });
+  if (varied.length) {
+    Logger.log('');
+    Logger.log('--- spelled more than one way (one config entry covers each group) ---');
+    varied.forEach(function (e) {
+      Logger.log('  ' + e.norm + ':');
+      Object.keys(e.spellings).forEach(function (sp) {
+        Logger.log('      "' + sp + '"  x' + e.spellings[sp]);
+      });
+    });
+  }
+
+  // ---- totals -------------------------------------------------------------
+  const tot = { WL: { v: 0, rows: 0, count: 0, cost: 0 },
+                CORE_RX: { v: 0, rows: 0, count: 0, cost: 0 } };
+  let silent = 0, silentCost = 0;
+  list.forEach(function (e) {
+    const t = tot[e.bucket];
+    t.v++; t.rows += e.rows; t.count += e.count; t.cost += e.cost;
+    // Rows that DO find a segment are the dangerous ones: a misclassified row
+    // here is absorbed into the wrong segment rather than reported as unmatched.
+    if (e.bucket === 'CORE_RX') { silent += e.rows - e.noSeg; silentCost += e.cost - e.noSegCost; }
+  });
+  Logger.log('');
+  Logger.log('--- totals ---');
+  ['WL', 'CORE_RX'].forEach(function (b) {
+    const t = tot[b];
+    Logger.log('  ' + pad_(b, 8) + '  ' + pad_(String(t.v), 3) + ' value(s), ' +
+               pad_(String(t.rows), 6) + ' row(s), ' +
+               pad_(Math.round(t.count).toLocaleString(), 12) + ' shipments, £' +
+               t.cost.toFixed(2));
+  });
+  if (blankTreat) Logger.log('  ' + blankTreat + ' row(s) have a blank Treatment Type.');
+  Logger.log('');
+  Logger.log('  Of the Core Rx rows, ' + silent + ' (£' + silentCost.toFixed(2) +
+             ') land on a segment that exists.');
+  Logger.log('  Those are the ones that would be absorbed silently if any of them is');
+  Logger.log('  really weight loss. The rest have no segment and are already reported');
+  Logger.log('  by previewActualsImport as unmatched.');
+
+  // ---- segments the importer can never reach ------------------------------
+  const ref = getAllData_(SHEET.DIM_REFERENCE), R = COL.DIM_REFERENCE;
+  const defined = [];
+  for (let i = 1; i < ref.length; i++) {
+    if (normKey(ref[i][R.List_Name]) !== 'TREATMENT_TYPE') continue;
+    if (!safeBool(ref[i][R.Active])) continue;
+    defined.push(safeStr(ref[i][R.Code]));
+  }
+  Logger.log('');
+  Logger.log('--- High Level IDs the import can never reach ---');
+  Logger.log('  Dim_Reference TREATMENT_TYPE defines: ' + (defined.join(', ') || '(none)'));
+  if (!oddSegments.length) {
+    Logger.log('  Every High Level ID is WL or CORE_RX. Nothing wrong here.');
+  } else {
+    oddSegments.forEach(function (o) {
+      Logger.log('  ' + pad_(String(o.id), 4) + '  ' + o.brand + ' ' + o.geo + ' ' +
+                 o.tt + (o.split ? ' (' + o.split + ')' : '') +
+                 (o.active ? '' : '  [inactive]'));
+    });
+    Logger.log('');
+    Logger.log('  The importer only ever produces WL or CORE_RX, so no extract row can');
+    Logger.log('  key to these. They will stay empty of actuals until either the');
+    Logger.log('  Treatment_Type is corrected in High_Level_IDs, or the value becomes a');
+    Logger.log('  real third classification that the import knows how to produce.');
+  }
+
+  Logger.log('');
+  Logger.log('  Nothing was written.');
+  return { values: list.length, rows: readRows,
+           wlValues: tot.WL.v, coreValues: tot.CORE_RX.v,
+           absorbedRows: silent, absorbedCost: silentCost,
+           oddSegments: oddSegments.length };
+}
+
+
 /** Remove every actual, so an import can start clean. */
 function clearActuals() {
   requireMaintenance_();
