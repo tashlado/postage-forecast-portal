@@ -159,7 +159,8 @@ input.bad{border-color:var(--err);background:#FFF6F7}
 .modal .fbody td.right,.modal .fbody th.right{text-align:right}
 .modal .fbody .warn{margin-top:8px;padding:8px 10px;border-radius:8px;
        background:#FFF6E5;border:1px solid #F2DDB0;color:#7A5A12;font-size:12px}
-.modal .fields{padding:16px 20px 4px;display:flex;flex-direction:column;gap:14px}
+.modal .fields{padding:16px 20px 4px;display:flex;flex-direction:column;gap:14px;
+       max-height:56vh;overflow:auto}
 .modal .fields .field label{font-size:12px;color:var(--ink-2)}
 .modal .hint{font-size:11px;color:var(--ink-3);margin-top:2px}
 .modal .acts{display:flex;justify-content:flex-end;gap:8px;padding:16px 20px;
@@ -168,6 +169,21 @@ input.bad{border-color:var(--err);background:#FFF6F7}
              color:var(--err);border-radius:8px;font-size:13px}
 .inline{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink-2)}
 .inline input[type=checkbox]{width:auto}
+/* ---- tick-box groups: a dimension picked as a set, not as one value ---- */
+.checks{border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+.checks .chead{display:flex;align-items:center;gap:6px;padding:5px 8px;
+       border-bottom:1px solid var(--line);font-size:11px;color:var(--ink-3)}
+.checks .chead .cnt{margin-left:auto}
+.checks .chead button{font:inherit;font-size:11px;color:var(--brand);padding:2px 6px;
+       border-radius:5px;cursor:pointer;background:none;border:1px solid transparent}
+.checks .chead button:hover{background:var(--brand-tint);border-color:var(--line)}
+.checks .clist{display:flex;flex-wrap:wrap;gap:2px 10px;padding:7px 9px;
+       max-height:148px;overflow:auto}
+.checks .clist label{display:flex;align-items:center;gap:6px;font-size:12px;
+       color:var(--ink-2);cursor:pointer;min-width:calc(50% - 10px)}
+.checks .clist input[type=checkbox]{width:auto;margin:0;flex:none}
+.checks.none{border-color:var(--err)}
+.checks.none .cnt{color:var(--err)}
 .suffixed{display:flex;align-items:center;gap:6px}
 .suffixed span{font-size:12px;color:var(--ink-3);white-space:nowrap}
 </style>
@@ -359,10 +375,45 @@ function closeForm(){
 }
 
 /**
+ * One dimension rendered as tick boxes rather than as a dropdown.
+ *
+ * Everything is ticked unless the caller passes a list, because All is the useful
+ * default for a bulk change and a form that opens on nothing selected invites a
+ * change that matches nothing. A list ticks exactly its members, matched
+ * case-insensitively so a value round-tripped through the server ticks the box it
+ * came from.
+ */
+function checksField(f){
+  var sel=f.value, want=null;
+  if(Array.isArray(sel) && sel.length){
+    want={};
+    sel.forEach(function(v){ want[String(v).toUpperCase()]=1; });
+  }
+  var h='<div class="checks" data-ckgroup="'+esc(f.key)+'">';
+  h+='<div class="chead">'+
+     '<button type="button" data-ckall="'+esc(f.key)+'">All</button>'+
+     '<button type="button" data-cknone="'+esc(f.key)+'">None</button>'+
+     '<span class="cnt" data-ckcount="'+esc(f.key)+'"></span></div>';
+  h+='<div class="clist">';
+  (f.options||[]).forEach(function(o){
+    var v=(o.value!==undefined?o.value:o), l=(o.label!==undefined?o.label:o);
+    var on = want ? !!want[String(v).toUpperCase()] : true;
+    h+='<label><input type="checkbox" data-ck="'+esc(f.key)+'" value="'+esc(v)+'"'+
+       (on?' checked':'')+'>'+esc(l)+'</label>';
+  });
+  return h+'</div></div>';
+}
+
+/**
  * cfg = { title, intro, body, saveLabel, fields:[...], onSave(values, done, fail) }
  * field = { key, label, type, value, options, hint, required, min, max, step,
  *           suffix, placeholder, openEnded }
- *   type: text | number | date | select | month
+ *   type: text | number | date | select | month | checks
+ *
+ * A 'checks' field is a set of tick boxes standing in for one dimension, not one
+ * value. Its value in and out is the list of codes ticked, with the single
+ * exception that every box ticked is '' — All — so a caller reading the result
+ * cannot tell "all of them" from the old single-select All, and does not need to.
  *
  * cfg.body is a block of markup shown above the fields, for a step that has
  * something to show rather than something to fill in — a table of what a bulk
@@ -400,6 +451,8 @@ function openForm(cfg){
            esc(l)+'</option>';
       });
       h+='</select>';
+    } else if(f.type==='checks'){
+      h+=checksField(f);
     } else if(f.suffix){
       h+='<div class="suffixed"><input id="mf_'+f.key+'" type="'+(f.type||'text')+'"'+
          (f.step?' step="'+f.step+'"':'')+(f.min!==undefined?' min="'+f.min+'"':'')+
@@ -449,6 +502,32 @@ function openForm(cfg){
     cb.onchange=sync; sync();
   });
 
+  /* Tick boxes: All, None, and a count saying which of the two you are on —
+     "every box ticked" and "most boxes ticked" look alike at a glance and mean
+     very different things to a bulk write. */
+  cfg.fields.forEach(function(f){
+    if(f.type!=='checks') return;
+    var boxes=back.querySelectorAll('[data-ck="'+f.key+'"]');
+    var cnt=back.querySelector('[data-ckcount="'+f.key+'"]');
+    var group=back.querySelector('[data-ckgroup="'+f.key+'"]');
+    if(!boxes.length || !cnt || !group) return;   // one missing element must not kill the form
+    function sync(){
+      var n=0;
+      Array.prototype.forEach.call(boxes,function(b){ if(b.checked) n++; });
+      cnt.textContent = n===boxes.length ? 'All '+boxes.length
+                      : (n===0 ? 'none ticked' : n+' of '+boxes.length);
+      group.className='checks'+(n===0?' none':'');
+    }
+    Array.prototype.forEach.call(boxes,function(b){ b.onchange=sync; });
+    var all=back.querySelector('[data-ckall="'+f.key+'"]');
+    var none=back.querySelector('[data-cknone="'+f.key+'"]');
+    if(all) all.onclick=function(){
+      Array.prototype.forEach.call(boxes,function(b){ b.checked=true; }); sync(); };
+    if(none) none.onclick=function(){
+      Array.prototype.forEach.call(boxes,function(b){ b.checked=false; }); sync(); };
+    sync();
+  });
+
   back.querySelector('#mCancel').onclick=closeForm;
   back.onclick=function(e){ if(e.target===back) closeForm(); };
   document.onkeydown=function(e){ if(e.key==='Escape') closeForm(); };
@@ -457,20 +536,36 @@ function openForm(cfg){
 
   var saveBtn=back.querySelector('#mSaveBtn');
   if(saveBtn) saveBtn.onclick=function(){
-    var vals={}, missing=[];
+    var vals={}, missing=[], unticked=[];
     cfg.fields.forEach(function(f){
+      if(f.type==='checks'){
+        var boxes=back.querySelectorAll('[data-ck="'+f.key+'"]');
+        var picked=[];
+        Array.prototype.forEach.call(boxes,function(b){ if(b.checked) picked.push(b.value); });
+        if(!picked.length) unticked.push(f.label);
+        /* Every box ticked is sent as All — the empty value the server has always
+           understood — not as a list of everything that happens to exist today. So
+           a method added next month falls inside a change made by ticking All, and
+           the audit trail records All rather than reciting a list that was complete
+           only on the day it was written. */
+        vals[f.key] = picked.length===boxes.length ? '' : picked;
+        return;
+      }
       var el=back.querySelector('#mf_'+f.key);
       var v=el?el.value:(f.value===undefined?'':f.value);
       if(f.required && String(v).trim()==='') missing.push(f.label);
       vals[f.key]=v;
     });
     if(missing.length) return fail('Please fill in: '+missing.join(', '));
+    if(unticked.length) return fail('Nothing is ticked under: '+unticked.join(', ')+
+      '. Tick the ones you mean, or press All.');
     var b=back.querySelector('#mSaveBtn');
     b.disabled=true; b.textContent='Saving…';
     cfg.onSave(vals, closeForm, fail);
   };
 
-  var first=back.querySelector('.fields input:not([disabled]), .fields select, .tiles button');
+  var first=back.querySelector('.fields input:not([disabled]):not([type=checkbox]), '+
+                              '.fields select, .tiles button');
   if(first) first.focus();
 }
 
@@ -984,9 +1079,12 @@ function delSurcharge(id){
    what the value on the next page even means — a base rate is currency per
    parcel, fuel is a fraction, the rest are amounts.
 
-   Then WHICH ROUTES: name a value for any dimension, or leave it as All. The
-   change lands on every existing rate that matches, as a new period, exactly as
-   "Add rate change" does for one route.
+   Then WHICH ROUTES: every dimension opens with all of its values ticked, and
+   unticking narrows that dimension only — the others are left alone. So ticking
+   three methods changes those methods across every treatment type, brand and
+   country that carries them. Values inside one dimension are ORed; the dimensions
+   are ANDed with each other. The change lands on every existing rate that matches,
+   as a new period, exactly as "Add rate change" does for one route.
 
    Courier group is deliberately absent from the dimensions: a bulk change always
    spans every courier. Carrier_Code is a real, separate column on Modelling_IDs —
@@ -1006,11 +1104,13 @@ var BULK_DIMENSIONS = [
   { key:'letterParcel',  label:'Class',          ref:'LETTER_PARCEL' }
 ];
 
-/* All is the empty value, never a magic string — a brand or method code called ALL
-   is one data operation away, and a wildcard a data entry can impersonate is a
-   wildcard waiting to widen somebody's rate change. */
+/* Every real value, and only real values. All is now "every box ticked", and it
+   still reaches the server as the empty selection — never a magic string, because
+   a brand or method code called ALL is one data operation away, and a wildcard a
+   data entry can impersonate is a wildcard waiting to widen somebody's rate
+   change. */
 function bulkDimOptions(d){
-  var opts=[{ value:'', label:'All' }];
+  var opts=[];
   if(d.src==='methods') S.methods.forEach(function(m){
     opts.push({ value:m.code, label:m.name+' ('+m.code+')' }); });
   else optsRef(d.ref).forEach(function(o){ opts.push(o); });
@@ -1063,10 +1163,16 @@ function bulkRateForm(chargeType, types, keep){
   var fields=[];
 
   BULK_DIMENSIONS.forEach(function(d,i){
-    fields.push({ key:d.key, label:d.label, type:'select', value:prior[d.key]||'',
+    /* No ||'' on the value: undefined means "first time through, tick everything",
+       and an empty string coming back from a preview means the same. An array
+       ticks exactly what it names. */
+    fields.push({ key:d.key, label:d.label, type:'checks', value:prior[d.key],
       options:bulkDimOptions(d),
-      hint:i===0?'Leave a dimension as All to change every value of it. '+
-                 'Every courier group is always included.':'' });
+      hint:i===0?'Every box starts ticked, which means All. Untick to narrow one '+
+                 'dimension — the others are left alone, so ticking three methods '+
+                 'changes those methods across every treatment type, brand and '+
+                 'country that carries them. Every courier group is always '+
+                 'included.':'' });
   });
 
   fields.push({ key:'validFrom', label:'Effective from', type:'date', required:true,
