@@ -606,17 +606,45 @@ function bulkRateChange(p) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Does a selected dimension value match a row's value?
+ * Does a dimension selection match a row's value?
  *
- * Empty means All. There is deliberately no magic string: a literal 'ALL' is
- * treated as a value to match, because a brand code called ALL is one data
- * operation away, and a wildcard that a data entry can impersonate is a wildcard
- * waiting to widen someone's rate change.
+ * Nothing selected means All, and so does a list with nothing usable in it.
+ * There is deliberately no magic string: a literal 'ALL' is treated as a value
+ * to match, because a brand code called ALL is one data operation away, and a
+ * wildcard that a data entry can impersonate is a wildcard waiting to widen
+ * someone's rate change.
+ *
+ * A list matches the UNION of its values — tick two methods and you get the
+ * routes on either, not the routes on both, which no route could satisfy. The
+ * dimensions are still ANDed with each other, so ticking methods narrows methods
+ * and leaves every treatment type, brand and geo carrying them in the set.
  */
 function dimensionMatches_(selected, rowValue) {
-  const want = safeStr(selected);
-  if (want === '') return true;
-  return normKey(rowValue) === normKey(want);
+  const wanted = dimensionWanted_(selected);
+  if (!wanted.length) return true;
+  const row = normKey(rowValue);
+  for (let i = 0; i < wanted.length; i++) if (wanted[i] === row) return true;
+  return false;
+}
+
+/**
+ * A dimension selection normalised to the list of codes it matches.
+ *
+ * Accepts one code or a list of them, because the bulk form now ticks boxes.
+ * Every box ticked and no box ticked both arrive as an empty list and both mean
+ * All — the form refuses to submit with none ticked, so an empty list can only
+ * ever have meant "everything", never "nothing". Blanks are dropped rather than
+ * matched and duplicates collapse, so ['RM48', '', 'rm48'] and ['RM48'] plan the
+ * same write.
+ */
+function dimensionWanted_(selected) {
+  const raw = Array.isArray(selected) ? selected : [selected];
+  const out = [];
+  for (let i = 0; i < raw.length; i++) {
+    const v = normKey(raw[i]);
+    if (v !== '' && out.indexOf(v) === -1) out.push(v);
+  }
+  return out;
 }
 
 /**
@@ -665,8 +693,11 @@ function describeDimensions_(dims, chargeType) {
   [['brand', 'brand'], ['geo', 'geo'], ['treatmentType', 'treatment'],
    ['wlSplit', 'WL split'], ['method', 'method'],
    ['letterParcel', 'class']].forEach(function (pair) {
-    const v = safeStr(sel[pair[0]]);
-    parts.push(pair[1] + '=' + (v === '' ? 'All' : v.toUpperCase()));
+    const wanted = dimensionWanted_(sel[pair[0]]);
+    /* Joined with + because the parts themselves are comma-joined, and a comma
+       here would read as another dimension in the audit trail. Sorted so the
+       same set ticked in a different order writes the same description. */
+    parts.push(pair[1] + '=' + (wanted.length ? wanted.slice().sort().join('+') : 'All'));
   });
   parts.push('carrier=All');   // stated, because it is not selectable
   return parts.join(', ');
@@ -1280,6 +1311,55 @@ function testBulkRateUpdate() {
   check("WL_Split '*' is matched as a value", star.ids.length < all.ids.length);
   check('an unknown value matches nothing',
         resolveDimensionTargets_({ brand: 'NO_SUCH_BRAND' }, perms).ids.length === 0);
+
+  // Ticked boxes arrive as a list. The cases that matter are the ones where a
+  // list could quietly mean something other than what was ticked.
+  const letterList = resolveDimensionTargets_({ letterParcel: ['LETTER'] }, perms);
+  Logger.log('  class=[LETTER]             : ' + letterList.ids.length);
+  check('a one-item list matches the same as naming that value',
+        letterList.ids.length === letters.ids.length);
+  check('an empty list means All, because that is how "every box ticked" arrives',
+        resolveDimensionTargets_({ letterParcel: [] }, perms).ids.length === all.ids.length);
+  check('a list of blanks means All, not nothing',
+        resolveDimensionTargets_({ letterParcel: ['', '  '] }, perms).ids.length === all.ids.length);
+  check('duplicates and case in a list neither widen nor narrow the set',
+        resolveDimensionTargets_({ letterParcel: ['LETTER', 'letter'] }, perms).ids.length ===
+        letters.ids.length);
+
+  const bothClasses = resolveDimensionTargets_({ letterParcel: ['LETTER', 'PARCEL'] }, perms);
+  Logger.log('  class=[LETTER,PARCEL]      : ' + bothClasses.ids.length +
+             '  (the union, not the intersection)');
+  check('a list matches the union of its values',
+        bothClasses.ids.length >= letters.ids.length &&
+        bothClasses.ids.length <= all.ids.length);
+  check('an unknown value alongside a known one does not suppress the known one',
+        resolveDimensionTargets_({ letterParcel: ['LETTER', 'NO_SUCH_CLASS'] }, perms).ids.length ===
+        letters.ids.length);
+
+  // Ticking methods must leave every other dimension wide open — the whole point
+  // of the tick boxes is that the untouched dimensions still mean All.
+  // Taken off a live route rather than out of Dim_Method, so the method is known
+  // to carry traffic and the count below can be asserted as non-zero.
+  const md = getAllData_(SHEET.MODELLING_IDS), MD = COL.MODELLING_IDS;
+  let oneMethod = '';
+  for (let i = 1; i < md.length && !oneMethod; i++) {
+    if (safeBool(md[i][MD.Active])) oneMethod = normKey(md[i][MD.Method_Code]);
+  }
+  if (oneMethod) {
+    const byMethod = resolveDimensionTargets_({ method: [oneMethod] }, perms);
+    Logger.log('  method=[' + oneMethod + ']: ' + byMethod.ids.length);
+    check('a method list narrows methods without narrowing anything else',
+          byMethod.ids.length > 0 && byMethod.ids.length <= all.ids.length &&
+          byMethod.ids.length ===
+            resolveDimensionTargets_({ method: [oneMethod], brand: [], geo: [],
+                                       treatmentType: [], wlSplit: [] }, perms).ids.length);
+  }
+
+  check('a list is described for the audit trail, sorted and +-joined',
+        describeDimensions_({ letterParcel: ['PARCEL', 'letter'] }, 'BASE')
+          .indexOf('class=LETTER+PARCEL') > -1);
+  check('an empty list is described as All',
+        describeDimensions_({ letterParcel: [] }, 'BASE').indexOf('class=All') > -1);
 
   // ---- 3. a charge type must be chosen -----------------------------------
   Logger.log('');
