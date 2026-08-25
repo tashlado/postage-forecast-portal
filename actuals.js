@@ -502,7 +502,7 @@ function diagnoseActualsTreatments() {
        actually seen are kept, so they can still be recognised below. */
     const e = seen[norm] || (seen[norm] = { norm: norm, bucket: bucket,
                                             spellings: {}, rows: 0, count: 0, cost: 0,
-                                            noSeg: 0, noSegCost: 0 });
+                                            noSeg: 0, noSegCost: 0, noSegWhere: {} });
     e.spellings[raw] = (e.spellings[raw] || 0) + 1;
     e.rows++;
     e.count += n;
@@ -510,6 +510,11 @@ function diagnoseActualsTreatments() {
     if (!segExists[brand + '|' + geo + '|' + bucket]) {
       e.noSeg++;
       e.noSegCost += parseExtractNumber_(r[cCost]);
+      /* Kept per brand and country, because "21 rows have nowhere to go" is a
+         curiosity and "MEDEXPRESS GB has nowhere to go" is an action. */
+      const w = e.noSegWhere[brand + ' ' + geo] ||
+                (e.noSegWhere[brand + ' ' + geo] = { rows: 0, count: 0, cost: 0 });
+      w.rows++; w.count += n; w.cost += parseExtractNumber_(r[cCost]);
     }
   }
 
@@ -521,12 +526,16 @@ function diagnoseActualsTreatments() {
              readRows + ' usable extract row(s) ---');
   Logger.log('  ' + pad_('bucket', 8) + '  ' + pad_('rows', 6) + '  ' +
              pad_('count', 12) + '  ' + pad_('cost', 14) + '  ' +
-             pad_('no seg', 7) + '  treatment type');
+             pad_('£/ship', 9) + '  ' + pad_('no seg', 7) + '  treatment type');
   list.forEach(function (e) {
     const sp = Object.keys(e.spellings);
     Logger.log('  ' + pad_(e.bucket, 8) + '  ' + pad_(String(e.rows), 6) + '  ' +
                pad_(Math.round(e.count).toLocaleString(), 12) + '  ' +
                pad_('£' + e.cost.toFixed(2), 14) + '  ' +
+               /* The implied cost per shipment. It is not used for anything, but a
+                  value that is an order of magnitude away from its neighbours is a
+                  data problem worth seeing next to the money, not after it. */
+               pad_('£' + (e.count ? (e.cost / e.count).toFixed(3) : '0.000'), 9) + '  ' +
                pad_(e.noSeg ? String(e.noSeg) : '-', 7) + '  ' +
                (sp[0] === '' ? '(blank)' : sp[0]) +
                (sp.length > 1 ? '   [+' + (sp.length - 1) + ' spelling' +
@@ -576,6 +585,24 @@ function diagnoseActualsTreatments() {
   Logger.log('  really weight loss. The rest have no segment and are already reported');
   Logger.log('  by previewActualsImport as unmatched.');
 
+  const orphaned = list.filter(function (e) { return e.noSeg > 0; });
+  if (orphaned.length) {
+    Logger.log('');
+    Logger.log('--- extract rows with no High Level ID to receive them ---');
+    orphaned.forEach(function (e) {
+      Logger.log('  ' + e.norm + '  (bucketed as ' + e.bucket + ')');
+      Object.keys(e.noSegWhere).sort().forEach(function (k) {
+        const w = e.noSegWhere[k];
+        Logger.log('      ' + pad_(k, 22) + '  ' + pad_(String(w.rows), 5) + ' row(s), ' +
+                   pad_(Math.round(w.count).toLocaleString(), 12) + ' shipments, £' +
+                   w.cost.toFixed(2));
+      });
+    });
+    Logger.log('  previewActualsImport already reports these as unmatched. They are');
+    Logger.log('  dropped, not misfiled — but a WL row here is volume the forecast');
+    Logger.log('  never sees, which looks the same as a segment that is simply quiet.');
+  }
+
   // ---- segments the importer can never reach ------------------------------
   const ref = getAllData_(SHEET.DIM_REFERENCE), R = COL.DIM_REFERENCE;
   const defined = [];
@@ -608,6 +635,319 @@ function diagnoseActualsTreatments() {
            wlValues: tot.WL.v, coreValues: tot.CORE_RX.v,
            absorbedRows: silent, absorbedCost: silentCost,
            oddSegments: oddSegments.length };
+}
+
+
+/**
+ * The extract broken down by Delivery Carrier and Delivery Method, and one
+ * brand/geo/treatment shown month by month.
+ *
+ * Reads only. Every other diagnostic here aggregates carrier and method away,
+ * because the forecast is a blended rate per order and the actual has to be
+ * blended the same way. That is right for comparing, and useless for explaining:
+ * when a segment's measured rate sits far below its forecast, the two candidates
+ * are a cost column that is missing rows and a count column that is counting
+ * something other than parcels — and carrier and method are the columns that
+ * tell those apart. A month where the carrier is blank and the cost is a
+ * rounding error is a gap in how the extract was compiled. A month where the
+ * carrier is real and the cost is still small is a gap in what it was charged.
+ *
+ * With no arguments it summarises the whole extract and then drills into the
+ * brand/geo/treatment carrying the most shipments, which is where an
+ * order-of-magnitude error is worth the most. Pass all three to choose another;
+ * matching ignores case and punctuation, as everywhere else in this file.
+ */
+function diagnoseActualsExtract(brand, geo, treatment) {
+  requireMaintenance_();
+  Logger.log('=== ACTUALS IMPORT — CARRIER AND METHOD (read-only) ===');
+  prewarmSheetCache_([SHEET.ACTUALS_IMPORT, SHEET.CONFIG]);
+
+  const rows = getAllData_(SHEET.ACTUALS_IMPORT);
+  if (rows.length < 2) {
+    Logger.log('  The Actuals_Import tab is empty — paste the extract there first.');
+    return { ok: false, reason: 'empty' };
+  }
+
+  const hdrRaw  = rows[0].map(function (h) { return safeStr(h); });
+  const hdrNorm = hdrRaw.map(normHeader_);
+  function find(candidates) {
+    for (let ci = 0; ci < candidates.length; ci++) {
+      const exact = hdrNorm.indexOf(normHeader_(candidates[ci]));
+      if (exact >= 0) return exact;
+    }
+    for (let ci = 0; ci < candidates.length; ci++) {
+      const want = normHeader_(candidates[ci]);
+      for (let hi = 0; hi < hdrNorm.length; hi++) {
+        if (!hdrNorm[hi]) continue;
+        if (hdrNorm[hi].indexOf(want) >= 0 || want.indexOf(hdrNorm[hi]) >= 0) return hi;
+      }
+    }
+    return -1;
+  }
+  function need(candidates, label) {
+    const i = find(candidates);
+    if (i < 0) throw new Error('The extract has no ' + label + ' column. Columns found: ' +
+                               hdrRaw.join(' | '));
+    return i;
+  }
+  const cCountry = need(['Country Code', 'Country'], 'country'),
+        cBrand   = need(['Brand'], 'brand'),
+        cTreat   = need(['Treatment Type', 'Treatment'], 'treatment type'),
+        cMonth   = need(['Dispatched Date: Month', 'Dispatched Month', 'Month'], 'month'),
+        cCount   = need(['Count', 'Shipments', 'Orders'], 'shipment count'),
+        cCost    = need(['Sum of Cost Of Shipping', 'Cost Of Shipping', 'Total Cost', 'Cost'],
+                        'shipping cost');
+  /* Carrier and method are optional rather than required: an older extract that
+     predates them should still give the summaries above, not an exception. */
+  const cCarrier = find(['Delivery Carrier', 'Carrier']),
+        cMethod  = find(['Delivery Method', 'Method', 'Service']);
+  Logger.log('  carrier column : ' + (cCarrier >= 0 ? '"' + hdrRaw[cCarrier] + '"' : 'NOT PRESENT'));
+  Logger.log('  method column  : ' + (cMethod  >= 0 ? '"' + hdrRaw[cMethod]  + '"' : 'NOT PRESENT'));
+  if (cCarrier < 0 && cMethod < 0) {
+    Logger.log('  Neither column is in this extract, so there is nothing to break down.');
+    return { ok: false, reason: 'no carrier or method column' };
+  }
+
+  /* A separator that cannot occur inside a carrier or method name, built
+     rather than written, so no control character sits in the source. */
+  const SEP = String.fromCharCode(1);
+  function cell(r, i) { return i >= 0 ? (safeStr(r[i]) || '(blank)') : '(n/a)'; }
+  function bump(map, key, n, cost) {
+    const e = map[key] || (map[key] = { rows: 0, count: 0, cost: 0 });
+    e.rows++; e.count += n; e.cost += cost;
+  }
+  function table(title, map) {
+    const keys = Object.keys(map).sort(function (a, b) { return map[b].cost - map[a].cost; });
+    Logger.log('');
+    Logger.log('--- ' + title + ' ---');
+    Logger.log('  ' + pad_('rows', 6) + '  ' + pad_('shipments', 12) + '  ' +
+               pad_('cost', 14) + '  ' + pad_('£/ship', 9) + '  value');
+    keys.forEach(function (k) {
+      const e = map[k];
+      Logger.log('  ' + pad_(String(e.rows), 6) + '  ' +
+                 pad_(Math.round(e.count).toLocaleString(), 12) + '  ' +
+                 pad_('£' + e.cost.toFixed(2), 14) + '  ' +
+                 pad_('£' + (e.count ? (e.cost / e.count).toFixed(4) : '0.0000'), 9) + '  ' + k);
+    });
+  }
+
+  // ---- pass one: the whole extract ---------------------------------------
+  const byCarrier = {}, byMethod = {}, combos = {};
+  let usable = 0;
+  for (let i = 1; i < rows.length; i++) {
+    const r = rows[i];
+    const b = normKey(r[cBrand]), g = normKey(r[cCountry]);
+    if (!b || !g) continue;
+    const n = parseExtractNumber_(r[cCount]);
+    if (!n) continue;
+    usable++;
+    const cost = parseExtractNumber_(r[cCost]);
+    bump(byCarrier, cell(r, cCarrier), n, cost);
+    bump(byMethod,  cell(r, cMethod),  n, cost);
+    const t = safeStr(r[cTreat]).toUpperCase().replace(/[^A-Z0-9]/g, '');
+    bump(combos, b + '|' + g + '|' + t, n, cost);
+  }
+  Logger.log('  usable rows    : ' + usable);
+  table('by Delivery Carrier', byCarrier);
+  table('by Delivery Method',  byMethod);
+
+  // ---- choose what to drill into -----------------------------------------
+  const wantB = normKey(brand), wantG = normKey(geo);
+  const wantT = safeStr(treatment).toUpperCase().replace(/[^A-Z0-9]/g, '');
+  let target = '';
+  if (wantB && wantG && wantT) {
+    target = wantB + '|' + wantG + '|' + wantT;
+    if (!combos[target]) {
+      Logger.log('');
+      Logger.log('  No rows for ' + wantB + ' ' + wantG + ' ' + wantT + '.');
+      return { ok: true, rows: usable, target: null };
+    }
+  } else {
+    Object.keys(combos).forEach(function (k) {
+      if (!target || combos[k].count > combos[target].count) target = k;
+    });
+    Logger.log('');
+    Logger.log('  No brand/geo/treatment given, so drilling into the combination');
+    Logger.log('  carrying the most shipments. Pass all three to choose another.');
+  }
+
+  // ---- pass two: that combination, month by month ------------------------
+  const cells = {}, months = {}, monthTot = {};
+  for (let i = 1; i < rows.length; i++) {
+    const r = rows[i];
+    const b = normKey(r[cBrand]), g = normKey(r[cCountry]);
+    if (!b || !g) continue;
+    const n = parseExtractNumber_(r[cCount]);
+    if (!n) continue;
+    const t = safeStr(r[cTreat]).toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (b + '|' + g + '|' + t !== target) continue;
+
+    const ms = parseExtractMonth_(r[cMonth]);
+    const mk = ms ? fmtDate(ms) : '(unparsed)';
+    months[mk] = ms ? dateKey(ms) : 0;
+    const cost = parseExtractNumber_(r[cCost]);
+    bump(cells, mk + SEP + cell(r, cCarrier) + SEP + cell(r, cMethod), n, cost);
+    bump(monthTot, mk, n, cost);
+  }
+
+  const parts = target.split('|');
+  Logger.log('');
+  Logger.log('--- ' + parts[0] + ' ' + parts[1] + ' ' + parts[2] + ', month by month ---');
+  Logger.log('  ' + pad_('month', 11) + '  ' + pad_('rows', 5) + '  ' +
+             pad_('shipments', 12) + '  ' + pad_('cost', 13) + '  ' +
+             pad_('£/ship', 9) + '  carrier / method');
+  Object.keys(months).sort(function (a, b) { return months[a] - months[b]; })
+    .forEach(function (mk) {
+      Object.keys(cells).filter(function (k) { return k.split(SEP)[0] === mk; })
+        .sort(function (a, b) { return cells[b].cost - cells[a].cost; })
+        .forEach(function (k) {
+          const e = cells[k], p = k.split(SEP);
+          Logger.log('  ' + pad_(mk, 11) + '  ' + pad_(String(e.rows), 5) + '  ' +
+                     pad_(Math.round(e.count).toLocaleString(), 12) + '  ' +
+                     pad_('£' + e.cost.toFixed(2), 13) + '  ' +
+                     pad_('£' + (e.count ? (e.cost / e.count).toFixed(4) : '0.0000'), 9) + '  ' +
+                     p[1] + ' / ' + p[2]);
+        });
+      const m = monthTot[mk];
+      Logger.log('  ' + pad_(mk, 11) + '  ' + pad_(String(m.rows), 5) + '  ' +
+                 pad_(Math.round(m.count).toLocaleString(), 12) + '  ' +
+                 pad_('£' + m.cost.toFixed(2), 13) + '  ' +
+                 pad_('£' + (m.count ? (m.cost / m.count).toFixed(4) : '0.0000'), 9) +
+                 '  == month total');
+    });
+
+  Logger.log('');
+  Logger.log('  A month whose carrier or method is (blank) was compiled without one.');
+  Logger.log('  If the blank months are also the near-zero-cost months, the cost was');
+  Logger.log('  never in the extract, and no change to this code can recover it.');
+  Logger.log('');
+  Logger.log('  Nothing was written.');
+  return { ok: true, rows: usable, target: target,
+           carriers: Object.keys(byCarrier).length,
+           methods: Object.keys(byMethod).length,
+           months: Object.keys(months).length };
+}
+
+
+/**
+ * Several segments' actuals against their forecast, side by side.
+ *
+ * Reads only. diagnoseActuals shows one segment in detail, and the Run menu
+ * cannot pass it an argument, so comparing segments means editing the default
+ * and running it again — which is how you end up comparing two logs from
+ * memory. This runs a fixed list and finishes with one table, because the
+ * question is not "what does segment 1 look like" but "is segment 1 unusual".
+ *
+ * The figure that carries the answer is REPORTED %: the cost the extract holds
+ * as a percentage of what the forecast says that many orders should have cost.
+ * Near 100 means the extract agrees with the model. Near zero means the cost is
+ * not there — and whether that is a portal problem or an extract problem is
+ * decided by how the OTHER segments read, not this one.
+ *
+ * Edit SEGMENTS to compare a different set.
+ */
+function diagnoseActualsSegments() {
+  requireMaintenance_();
+  Logger.log('=== ACTUALS vs FORECAST, SEVERAL SEGMENTS (read-only) ===');
+
+  /* Chosen to separate four explanations that look identical from one segment:
+     1 and 11 share a brand and country and differ by treatment; 1, 5 and 6 share
+     a brand and treatment and differ by country. Whichever dimension the anomaly
+     follows names the team that owns it. */
+  const SEGMENTS = [1, 5, 6, 11];
+
+  prewarmSheetCache_([SHEET.ACTUALS, SHEET.HIGH_LEVEL_IDS, SHEET.OUTPUT, SHEET.CONFIG]);
+
+  const hl = getAllData_(SHEET.HIGH_LEVEL_IDS), H = COL.HIGH_LEVEL_IDS;
+  const name = {};
+  for (let i = 1; i < hl.length; i++) {
+    const id = safeInt(hl[i][H.High_Level_ID]);
+    if (!id) continue;
+    name[id] = safeStr(hl[i][H.Brand]) + ' ' + safeStr(hl[i][H.Geo]) + ' ' +
+               safeStr(hl[i][H.Treatment_Type]) +
+               (safeStr(hl[i][H.WL_Split]) ? ' ' + safeStr(hl[i][H.WL_Split]) : '');
+  }
+
+  const out = getAllData_(SHEET.OUTPUT), O = COL.OUTPUT;
+  const fc = {};
+  for (let i = 1; i < out.length; i++) {
+    fc[safeInt(out[i][O.High_Level_ID]) + '|' + fmtDate(out[i][O.Month_Start])] =
+      safeNum(out[i][O.Forecast_Rate_Per_Order]);
+  }
+
+  const act = getAllData_(SHEET.ACTUALS), A = COL.ACTUALS;
+  const summary = [];
+
+  SEGMENTS.forEach(function (hlId) {
+    Logger.log('');
+    Logger.log('--- ' + hlId + '  ' + (name[hlId] || '(no such High Level ID)') + ' ---');
+
+    const months = [];
+    for (let i = 1; i < act.length; i++) {
+      if (safeInt(act[i][A.High_Level_ID]) !== hlId) continue;
+      if (!safeBool(act[i][A.Active])) continue;
+      months.push({ month: fmtDate(act[i][A.Month_Start]),
+                    orders: safeNum(act[i][A.Orders]),
+                    spend: safeNum(act[i][A.Total_Spend]),
+                    rate: safeNum(act[i][A.Blended_Rate]) });
+    }
+    months.sort(function (a, b) { return a.month < b.month ? -1 : a.month > b.month ? 1 : 0; });
+
+    if (!months.length) {
+      Logger.log('  No actuals on record.');
+      summary.push({ id: hlId, months: 0, orders: 0, spend: 0, expected: 0 });
+      return;
+    }
+
+    Logger.log('  ' + pad_('month', 11) + '  ' + pad_('orders', 10) + '  ' +
+               pad_('spend', 13) + '  ' + pad_('rate', 9) + '  ' +
+               pad_('forecast', 9) + '  ' + pad_('reported', 9));
+    let to = 0, ts = 0, te = 0;
+    months.forEach(function (m) {
+      const f = fc[hlId + '|' + m.month] || 0;
+      /* Orders on the second half of a split pair are deliberately zero — the
+         importer puts shipments and spend on the lower ID only, so nothing is
+         counted twice. A row like that is shown but contributes no expectation. */
+      const exp = m.orders * f;
+      to += m.orders; ts += m.spend; te += exp;
+      Logger.log('  ' + pad_(m.month, 11) + '  ' +
+                 pad_(Math.round(m.orders).toLocaleString(), 10) + '  ' +
+                 pad_('£' + m.spend.toFixed(2), 13) + '  ' +
+                 pad_('£' + m.rate.toFixed(4), 9) + '  ' +
+                 pad_(f ? '£' + f.toFixed(4) : '-', 9) + '  ' +
+                 pad_(exp ? ((m.spend / exp) * 100).toFixed(2) + '%' : '-', 9));
+    });
+    Logger.log('  ' + pad_('TOTAL', 11) + '  ' +
+               pad_(Math.round(to).toLocaleString(), 10) + '  ' +
+               pad_('£' + ts.toFixed(2), 13) + '  ' +
+               pad_(to ? '£' + (ts / to).toFixed(4) : '-', 9) + '  ' +
+               pad_('', 9) + '  ' +
+               pad_(te ? ((ts / te) * 100).toFixed(2) + '%' : '-', 9));
+    if (te) {
+      Logger.log('  expected at forecast: £' + te.toFixed(2) +
+                 '   shortfall £' + (te - ts).toFixed(2));
+    }
+    summary.push({ id: hlId, months: months.length, orders: to, spend: ts, expected: te });
+  });
+
+  Logger.log('');
+  Logger.log('--- side by side ---');
+  Logger.log('  ' + pad_('id', 4) + '  ' + pad_('reported', 9) + '  ' +
+             pad_('shortfall', 14) + '  segment');
+  summary.forEach(function (s) {
+    Logger.log('  ' + pad_(String(s.id), 4) + '  ' +
+               pad_(s.expected ? ((s.spend / s.expected) * 100).toFixed(2) + '%' : '-', 9) + '  ' +
+               pad_(s.expected ? '£' + (s.expected - s.spend).toFixed(2) : '-', 14) + '  ' +
+               (name[s.id] || '?'));
+  });
+  Logger.log('');
+  Logger.log('  Reading it: if only 1 is low, the problem is that segment. If 1, 5 and 6');
+  Logger.log('  are low and 11 is not, it follows weight loss. If all four are low, it is');
+  Logger.log('  the extract as a whole. If 1 and 11 are low but 5 and 6 are not, it');
+  Logger.log('  follows the country.');
+  Logger.log('');
+  Logger.log('  Nothing was written.');
+  return { segments: summary };
 }
 
 
@@ -775,7 +1115,7 @@ function importActualsFromStaging(commit) {
   }
 
   // ---- aggregate ----------------------------------------------------------
-  const agg = {}, unmatched = {}, outside = {};
+  const agg = {}, unmatched = {}, outside = {}, defaulted = {};
   let read = 0, skipped = 0;
 
   for (let i = 1; i < rows.length; i++) {
@@ -784,7 +1124,8 @@ function importActualsFromStaging(commit) {
     if (!brand || !geo) { skipped++; continue; }
 
     const treatRaw = safeStr(r[cTreat]);
-    const treat = wl[treatRaw.toUpperCase().replace(/[^A-Z0-9]/g, '')] ? 'WL' : 'CORE_RX';
+    const treatKey = treatRaw.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const treat = wl[treatKey] ? 'WL' : 'CORE_RX';
     const ms = parseExtractMonth_(r[cMonth]);
     if (!ms) { skipped++; continue; }
 
@@ -792,6 +1133,25 @@ function importActualsFromStaging(commit) {
     const cost = parseExtractNumber_(r[cCost]);
     if (!n) { skipped++; continue; }
     read++;
+
+    /* Core Rx is a DEFAULT, not a decision: every treatment string that is not
+       in ACTUALS_WL_TREATMENTS lands here, whether or not anyone has ever looked
+       at it. A weight-loss value missing from that config is therefore not
+       dropped — it is added to the Core Rx segment for the same brand and
+       country, moving that segment's volume AND its blended rate, since the rate
+       is cost divided by shipments for the whole segment-month. Both sides then
+       fail to reconcile at once.
+
+       Nothing in the sheet records which of ~50 conditions ought to be weight
+       loss, so this cannot be validated — but it can refuse to be quiet. Every
+       defaulted value is counted here and printed below with its money, the way
+       RATE_MISSING reports a route priced at zero rather than letting the
+       forecast come out low with nothing said. */
+    if (treat === 'CORE_RX') {
+      const df = defaulted[treatKey] ||
+                 (defaulted[treatKey] = { raw: treatRaw, rows: 0, ship: 0, cost: 0 });
+      df.rows++; df.ship += n; df.cost += cost;
+    }
 
     const segKey = brand + '|' + geo + '|' + treat;
     if (!byKey[segKey]) {
@@ -836,6 +1196,32 @@ function importActualsFromStaging(commit) {
 
   Logger.log('  actual rows to write   : ' + toWrite.length);
 
+  // ---- what fell through to Core Rx without being asked about -------------
+  const dfList = Object.keys(defaulted).map(function (k) { return defaulted[k]; });
+  dfList.sort(function (a, b) { return b.cost - a.cost; });
+  let dfRows = 0, dfCost = 0;
+  dfList.forEach(function (d) { dfRows += d.rows; dfCost += d.cost; });
+  if (dfList.length) {
+    Logger.log('');
+    Logger.log('--- ' + dfList.length + ' treatment value(s) fell through to Core Rx by ' +
+               'default: ' + dfRows + ' row(s), £' + dfCost.toFixed(2) + ' ---');
+    Logger.log('  These matched nothing in ACTUALS_WL_TREATMENTS. That is correct for a');
+    Logger.log('  genuine Core Rx condition and wrong for a weight-loss one, and nothing');
+    Logger.log('  in the sheet says which is which. Read the list.');
+    Logger.log('  ' + pad_('rows', 6) + '  ' + pad_('shipments', 12) + '  ' +
+               pad_('cost', 14) + '  ' + pad_('£/ship', 9) + '  treatment type');
+    dfList.forEach(function (d) {
+      Logger.log('  ' + pad_(String(d.rows), 6) + '  ' +
+                 pad_(Math.round(d.ship).toLocaleString(), 12) + '  ' +
+                 pad_('£' + d.cost.toFixed(2), 14) + '  ' +
+                 pad_('£' + (d.ship ? (d.cost / d.ship).toFixed(3) : '0.000'), 9) + '  ' +
+                 (d.raw === '' ? '(blank)' : d.raw));
+    });
+    Logger.log('  diagnoseActualsTreatments() shows the same list with where each row');
+    Logger.log('  would land. Add any weight-loss value to Config ACTUALS_WL_TREATMENTS');
+    Logger.log('  and run the preview again before committing.');
+  }
+
   if (Object.keys(unmatched).length) {
     Logger.log('');
     Logger.log('--- no segment for these, so they are left out ---');
@@ -860,7 +1246,9 @@ function importActualsFromStaging(commit) {
     Logger.log('');
     Logger.log('  Nothing written. Run importActualsFromStaging(true) to load them.');
     return { ok: true, preview: true, rows: toWrite.length,
-             unmatched: Object.keys(unmatched).length };
+             unmatched: Object.keys(unmatched).length,
+             defaultedValues: dfList.length, defaultedRows: dfRows,
+             defaultedCost: dfCost };
   }
 
   // ---- write --------------------------------------------------------------
@@ -879,7 +1267,9 @@ function importActualsFromStaging(commit) {
   }
   Logger.log('');
   Logger.log('  Open the Actuals tab in the portal to see them against the forecast.');
-  return { ok: true, preview: false, written: res.written, skipped: res.skipped };
+  return { ok: true, preview: false, written: res.written, skipped: res.skipped,
+           defaultedValues: dfList.length, defaultedRows: dfRows,
+           defaultedCost: dfCost };
 }
 
 
