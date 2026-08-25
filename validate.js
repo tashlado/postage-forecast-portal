@@ -40,6 +40,7 @@ function runValidation(scenarioId) {
   ruleDuplicates_(findings);
   ruleMethodCarrier_(findings);
   ruleTbcCarrier_(findings);
+  ruleTreatmentNotImported_(findings);
   ruleOutputSwing_(result, input, findings);
 
   writeValidationResults_(findings, null);
@@ -172,6 +173,50 @@ function ruleCoverage_(input, out) {
   // Cold chain is out of scope for now, so a gap is INFO: it simply means 100% ambient.
   coverage(input.mixColdChain, 'CC_COVERAGE', SEVERITY.INFO, 'cold-chain mix (treated as 100% ambient)');
 }
+
+/**
+ * Segments the actuals import does not deliver to, listed so they stay visible.
+ *
+ * The import collapses the extract's treatment strings into exactly two values,
+ * WL and CORE_RX, and keys each segment on brand + geo + treatment. A High Level
+ * ID carrying any other Treatment_Type is therefore never matched by an extract
+ * row, and shows no imported actuals.
+ *
+ * That is not necessarily a defect. A segment can be deliberately held apart
+ * from the values the import produces — a product whose postage differs enough
+ * to be forecast separately, standing dormant until its rates are set and the
+ * import learns to recognise it. WL_ORAL is exactly that. So this is INFO: a
+ * standing note that these segments are expected to read zero, which is what
+ * stops someone investigating an empty segment that is empty on purpose.
+ *
+ * Dim_Reference is not the authority here, deliberately. Adding a code to the
+ * TREATMENT_TYPE list lets saveHighLevelId accept it; it does not teach the
+ * import to produce it. So this checks against what the import can actually
+ * emit, and the day it learns another value, REACHABLE is where it is added.
+ *
+ * What this rule cannot see, and is worth remembering: a dormant segment reads
+ * zero, but the volume it would have received is not necessarily absent. If the
+ * extract carries those shipments under a string that maps to WL or CORE_RX,
+ * they are landing on a different segment for the same brand and country. The
+ * zero here is the visible half of that.
+ */
+function ruleTreatmentNotImported_(out) {
+  const REACHABLE = ['WL', 'CORE_RX'];
+  const hl = getAllData_(SHEET.HIGH_LEVEL_IDS), H = COL.HIGH_LEVEL_IDS;
+  for (let i = 1; i < hl.length; i++) {
+    const id = safeInt(hl[i][H.High_Level_ID]);
+    if (!id || !safeBool(hl[i][H.Active])) continue;
+    const tt = normKey(hl[i][H.Treatment_Type]);
+    if (REACHABLE.indexOf(tt) > -1) continue;
+    out.push({ rule: 'TREATMENT_NOT_IMPORTED', severity: SEVERITY.INFO, hlId: id,
+      message: 'High Level ID ' + id + ' is forecast on Treatment_Type "' +
+               safeStr(hl[i][H.Treatment_Type]) + '", which the actuals import does ' +
+               'not produce — it emits only ' + REACHABLE.join(' or ') + '. No ' +
+               'imported actual will land here, so it is expected to read zero. ' +
+               'Tracked, not a defect.' });
+  }
+}
+
 
 /** The same business segment or the same route defined twice. */
 function ruleDuplicates_(out) {
