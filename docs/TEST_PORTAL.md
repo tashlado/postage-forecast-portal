@@ -27,39 +27,43 @@ Sources: `BASELINE.md` §"Step 0 — record both environments", `PHASE_0_VERIFIC
 | | Spreadsheet ID | What it is |
 |---|---|---|
 | **Test copy** | `1YTwIvSrLwaObPAdIT0G7-v_o1RG2J2nOcDvVKNJEoSU` | `Copy of Postage Forecast — Data`. **Live and in use** — the test project's `SPREADSHEET_ID` property points here. Confirmed by `showEnvironment()` 2026-08-25 13:43. |
-| **Production (per the fallback constant)** | `1UgIBKzJAEJM-U2MzmcEIBuf21scLDCcu9ZOZKtI2KLE` | `SPREADSHEET_ID_FALLBACK` in `utils.js`. **See the caveat below — this may be stale.** |
+| **Production** | `1UgIBKzJAEJM-U2MzmcEIBuf21scLDCcu9ZOZKtI2KLE` | `Postage Forecast — Data`. The live forecast. **Confirmed 2026-08-26 15:01** — see below. Also `SPREADSHEET_ID_FALLBACK` in `utils.js`. |
 | **Legacy workbook** | `18a-Pfaa3hy0OlNcl3jYri-qccLku13JyDhfm0lOq4io` | Read-only source for `migrate*()` and `runParityTest()`. From `SOURCE_SPREADSHEET_ID_FALLBACK` in `migrate.js`; no property set. |
 
-### ⚠️ Is `1UgIBKz…` actually production? Unconfirmed.
+### Confirmed 2026-08-26 15:01 — `showEnvironment()` on the PRODUCTION project
 
-Every claim that it is comes from **finding S14** and the Phase 0 checklist's expected-output
-table — not from an independently recorded fact. `BASELINE.md`'s "App spreadsheet ID" row for the
-production column is **blank**; it was never filled in.
+```
+  script project  : 1JHYSultHlRsjZkWcJ9JJ8CNEsBFCUYJVe_n1tENX14_g48ohbe80rGWw
+--- app data: everything the portal reads and writes ---
+  spreadsheet ID  : 1UgIBKzJAEJM-U2MzmcEIBuf21scLDCcu9ZOZKtI2KLE
+  resolved from   : the committed fallback in utils.gs — no SPREADSHEET_ID property is set
+  file name       : Postage Forecast — Data
+```
 
-**Reported 2026-08-25: the file would not open.** So either the account used lacks access, or the
-committed fallback is stale (renamed, moved, trashed, or re-pointed). That distinction matters:
+Three things this settles, all of which had been recorded here as open:
 
-- If it is production, S14 stands as written — an unset property **silently writes production**.
-- If it is stale, an unset property makes `_getSs_()` throw instead, which is *safer* but means
-  the constant is a lie and the S14 write-up overstates the risk.
+1. **`1UgIBKz…` is production's live data**, and it **opens fine** — the name resolves. An earlier
+   report that the file would not open was something else (wrong account, or the legacy-workbook
+   link). `BASELINE.md`'s blank "App spreadsheet ID" row for production can be filled in from here.
+2. **`1JHYSult…` is the production script project**, confirming the table above.
+3. **Production loads.** `showEnvironment()` returning at all proves it, which matters because a
+   load-order fault (M9) fires before any function body runs and would have failed identically.
 
-**Do not resolve this by guessing.** Open the ID directly as the portal administrator. Record the
-answer here, and if it is stale, fix `SPREADSHEET_ID_FALLBACK` or replace it with a value that
-cannot be mistaken for a live file.
+Production runs on the **committed fallback with no property set**, which is correct for
+production: `SPREADSHEET_ID_FALLBACK` names its own spreadsheet. The test copy
+(`Copy of Postage Forecast — Data`) is a copy of this file.
 
 ### The trap, stated plainly (FINDINGS.md **S14**)
 
-The committed `scriptId` is **test**, but `SPREADSHEET_ID_FALLBACK` is a *different, non-test*
-spreadsheet — reported as production, though see the caveat above. So:
+The committed `scriptId` is **test**, but `SPREADSHEET_ID_FALLBACK` is **production** — now
+confirmed rather than inferred. So:
 
-> **A test project with no `SPREADSHEET_ID` Script Property set reads and writes whatever
-> `SPREADSHEET_ID_FALLBACK` names, and the only signal is running `showEnvironment()` and reading
-> the output.**
+> **A test project with no `SPREADSHEET_ID` Script Property set reads and writes the PRODUCTION
+> spreadsheet, and the only signal is running `showEnvironment()` and reading the output.**
 
-The shape of the problem does not depend on resolving that caveat: nothing in the code enforces
-the script-project-to-spreadsheet pairing, the property is the only thing separating the
-environments, and an unset property fails **open** rather than refusing. The safe default is the
-dangerous one.
+Nothing in the code enforces the script-project-to-spreadsheet pairing. The property is the only
+thing separating the environments, and an unset property fails **open** rather than refusing. The
+safe default is the dangerous one.
 
 Anything named `test…Write()` — `testRateWrite`, `testMixWrite`, `testStructureWrite`,
 `testAuditTrail` — and any commit-mode maintenance function (`runActualsImport`,
