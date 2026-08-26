@@ -3022,49 +3022,99 @@ function previewRateCopyFromTestCopy() { return copyRatesFromOtherSpreadsheet(fa
 function runRateCopyFromTestCopy()     { return copyRatesFromOtherSpreadsheet(true, null); }
 
 
+
 // ─────────────────────────────────────────────────────────────────────────────
-// CORRECT ONE FUEL WINDOW ACROSS EVERY ROYAL MAIL ROUTE
+// SET ONE FUEL WINDOW TO 16% — GB HIGH LEVEL IDS, MODELLING IDS 5-22
 //
-// The request: 4 May to 12 June 2026 should be 16% fuel on every Royal Mail
-// route, and several are on 14%.
+// The request: for every High Level ID whose Geo is GB, Modelling IDs 5 to 22
+// should carry 16% fuel from 4 May 2026 to 12 June 2026.
 //
-// This UPDATES ROWS IN PLACE rather than deactivating and recreating them. The
-// period boundaries are not changing — only the value — so an in-place update is
-// both the smaller change and the more honest one: the audit trail then reads
-// "Value 0.14 -> 0.16 on this row", which is what happened, instead of a delete
-// and a create that has to be pieced back together. It also cannot trip
-// assertNoOverlap_, because no date moves.
+// Both halves are applied as an INTERSECTION: a Modelling ID in 5-22 whose High
+// Level ID is not GB is left alone, because "high level IDs that are GB" is a
+// restriction and not decoration. That is the narrow reading, deliberately —
+// narrow can be widened on a second run, wide cannot be taken back.
 //
-// WHAT IT WILL NOT TOUCH, and why that matters here. A route whose fuel period
-// runs 4 May to 30 September cannot have "4 May to 12 June" corrected by changing
-// a value — the window is a SUBSET of the period, so honouring the request would
-// mean splitting one period into two or three. That is a structural change to a
-// rate schedule, not a correction, and getting it wrong leaves a gap that the
-// engine prices at nothing. Those routes are reported as NEEDS SPLITTING and left
-// exactly as they are.
+// THIS ONE CARVES PERIODS, which the earlier version refused to do. A route whose
+// fuel period runs 4 May to 30 September cannot be corrected by changing a value,
+// because the window is a subset of the period. So the period is cut:
 //
-// Everything goes through saveSurchargeRate, so each change lands in
-// Rate_Surcharge_Amends and the Audit_Log with the running user's name on it.
+//     before   |--------------- 0.14 : 04 May .. 30 Sep ---------------|
+//     after    |-- 0.16 : 04 May .. 12 Jun --|-- 0.14 : 13 Jun .. 30 Sep --|
+//
+// and a period that also starts before the window gains a third piece at the
+// front. The pieces outside the window keep the value they had — the request is
+// about the window, so nothing outside it may change by implication.
+//
+// Order matters and is not incidental. The existing row is UPDATED to the earliest
+// piece first, then the later pieces are created. Shrinking before inserting means
+// no intermediate state ever overlaps, so assertNoOverlap_ never fires on work
+// this function is itself doing. Creating first would collide with the row still
+// occupying those dates.
+//
+// A route with NO fuel period spanning the window is reported and NOT given one.
+// Adding fuel where there was none takes a route from "no fuel" to "16% fuel",
+// which is a different claim from "this window is wrong", and it should be a
+// decision rather than a side effect.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/* From the request. Printed in full by the preview so they can be checked against
-   what was actually asked for, rather than trusted because they are in the source. */
-const RM_FUEL_FIX_FROM  = '2026-05-04';
-const RM_FUEL_FIX_TO    = '2026-06-12';
-const RM_FUEL_FIX_VALUE = 0.16;
-const RM_FUEL_FIX_REF   = 'Royal Mail fuel correction, 4 May - 12 Jun 2026';
+/* From the request. Printed by the preview so they can be read back against what
+   was asked, rather than trusted because they are in the source. */
+const GB_FUEL_GEO       = 'GB';
+const GB_FUEL_MID_FROM  = 5;
+const GB_FUEL_MID_TO    = 22;
+const GB_FUEL_FROM      = '2026-05-04';
+const GB_FUEL_TO        = '2026-06-12';
+const GB_FUEL_VALUE     = 0.16;
+const GB_FUEL_REF       = 'GB fuel 16% 4 May - 12 Jun 2026';
+
+/** The day before / after a yyyy-mm-dd, letting Date handle month and year rollover. */
+function gbFuelDayBefore_(s) {
+  const d = normaliseDate(s);
+  return fmtDate(new Date(d.getFullYear(), d.getMonth(), d.getDate() - 1));
+}
+function gbFuelDayAfter_(s) {
+  const d = normaliseDate(s);
+  return fmtDate(new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1));
+}
 
 /**
- * Set the 4 May - 12 Jun 2026 fuel surcharge to 16% on every Royal Mail route
- * whose period matches that window exactly.
+ * Cut one existing period into the pieces it becomes.
+ *
+ * Returns them in date order. The piece covering the window takes the new value;
+ * anything before or after keeps the period's original value, because the request
+ * concerns the window and must not move rates either side of it.
+ *
+ * @return {Array} [{ from, to, value, isWindow }]
+ */
+function gbFuelCarve_(row, wFrom, wTo, newValue) {
+  const pieces = [];
+  const pFrom = row.from, pTo = row.to;
+
+  if (dateKey(pFrom) < dateKey(wFrom)) {
+    pieces.push({ from: pFrom, to: gbFuelDayBefore_(wFrom), value: row.value, isWindow: false });
+  }
+  pieces.push({
+    from: dateKey(pFrom) > dateKey(wFrom) ? pFrom : wFrom,
+    to:   dateKey(pTo)   < dateKey(wTo)   ? pTo   : wTo,
+    value: newValue, isWindow: true
+  });
+  if (dateKey(pTo) > dateKey(wTo)) {
+    pieces.push({ from: gbFuelDayAfter_(wTo), to: pTo, value: row.value, isWindow: false });
+  }
+  return pieces;
+}
+
+/**
+ * Set the fuel surcharge to 16% for 4 May - 12 Jun 2026 on Modelling IDs 5-22
+ * belonging to GB High Level IDs.
  *
  * @param {boolean} commit  false (default) reports and writes nothing
  */
-function fixRoyalMailFuelWindow(commit) {
+function setGbFuelWindow(commit) {
   requireMaintenance_();
   const t0 = Date.now();
-  Logger.log(commit ? '=== CORRECTING ROYAL MAIL FUEL (WRITING) ==='
-                    : '=== ROYAL MAIL FUEL CORRECTION — PREVIEW (nothing written) ===');
+  Logger.log(commit ? '=== SETTING GB FUEL WINDOW (WRITING) ==='
+                    : '=== GB FUEL WINDOW — PREVIEW (nothing written) ===');
 
   prewarmSheetCache_([SHEET.RATE_SURCHARGE, SHEET.MODELLING_IDS, SHEET.HIGH_LEVEL_IDS,
                       SHEET.DIM_SURCHARGE, SHEET.PERMISSIONS, SHEET.PORTAL_ROLES,
@@ -3073,215 +3123,250 @@ function fixRoyalMailFuelWindow(commit) {
   const perms = requirePermissions_();
   requireEditRates_(perms);
 
-  Logger.log('  spreadsheet : ' + spreadsheetId_() + '   <- CHECK THIS IS THE ONE YOU MEAN');
-  Logger.log('  window      : ' + RM_FUEL_FIX_FROM + ' to ' + RM_FUEL_FIX_TO);
-  Logger.log('  target      : ' + FUEL_COPY_CODE + ' = ' + RM_FUEL_FIX_VALUE +
-             '  (' + (RM_FUEL_FIX_VALUE * 100).toFixed(0) + '%)');
-  Logger.log('  carriers    : ' + FUEL_COPY_SOURCE_CARRIERS.join(' / '));
-  Logger.log('  running as  : ' + perms.email + '  role ' + perms.role);
+  Logger.log('  spreadsheet   : ' + spreadsheetId_() + '   <- CHECK THIS IS THE RIGHT FILE');
+  Logger.log('  High Level IDs: Geo = ' + GB_FUEL_GEO);
+  Logger.log('  Modelling IDs : ' + GB_FUEL_MID_FROM + ' to ' + GB_FUEL_MID_TO + ' inclusive');
+  Logger.log('  window        : ' + GB_FUEL_FROM + ' to ' + GB_FUEL_TO);
+  Logger.log('  set ' + FUEL_COPY_CODE + ' to   : ' + GB_FUEL_VALUE +
+             '   (' + (GB_FUEL_VALUE * 100).toFixed(0) + '%)');
+  Logger.log('  running as    : ' + perms.email + '  role ' + perms.role);
 
-  const wantFrom = dateKey(RM_FUEL_FIX_FROM), wantTo = dateKey(RM_FUEL_FIX_TO);
-  const accepted = {};
-  FUEL_COPY_SOURCE_CARRIERS.forEach(function (c) { accepted[normKey(c)] = true; });
+  // ---- which High Level IDs are GB ---------------------------------------
+  const hl = getAllData_(SHEET.HIGH_LEVEL_IDS), H = COL.HIGH_LEVEL_IDS;
+  const gbHl = {}, geoCensus = {};
+  for (let i = 1; i < hl.length; i++) {
+    const id = safeInt(hl[i][H.High_Level_ID]);
+    if (!id) continue;
+    const geo = normKey(hl[i][H.Geo]);
+    geoCensus[geo] = (geoCensus[geo] || 0) + 1;
+    if (geo === normKey(GB_FUEL_GEO) && safeBool(hl[i][H.Active])) {
+      gbHl[id] = safeStr(hl[i][H.Brand]) + ' ' + safeStr(hl[i][H.Treatment_Type]) +
+                 (safeStr(hl[i][H.WL_Split]) ? ' ' + safeStr(hl[i][H.WL_Split]) : '');
+    }
+  }
+  const gbIds = Object.keys(gbHl).map(function (k) { return safeInt(k); })
+                      .sort(function (a, b) { return a - b; });
 
-  // ---- which routes are Royal Mail, across every High Level ID ------------
+  Logger.log('');
+  Logger.log('--- GB High Level IDs: ' + gbIds.length + ' ---');
+  gbIds.forEach(function (id) { Logger.log('    HL ' + pad_(id, 4) + '  ' + gbHl[id]); });
+  if (!gbIds.length) {
+    Logger.log('  NONE. Geo values present in High_Level_IDs:');
+    Object.keys(geoCensus).sort().forEach(function (g) {
+      Logger.log('    ' + pad_(geoCensus[g], 5) + '  ' + (g || '(blank)')); });
+    return { ok: false, reason: 'no GB High Level IDs', geoCensus: geoCensus };
+  }
+
+  // ---- the routes in range that belong to them ---------------------------
   const md = getAllData_(SHEET.MODELLING_IDS), M = COL.MODELLING_IDS;
-  const routes = [], carrierCensus = {};
+  const inRange = [], excludedNonGb = [];
   for (let i = 1; i < md.length; i++) {
     const id = safeInt(md[i][M.Modelling_ID]);
-    if (!id) continue;
-    const carrier = normKey(md[i][M.Carrier_Code]);
-    carrierCensus[carrier] = (carrierCensus[carrier] || 0) + 1;
-    if (!accepted[carrier]) continue;
-    if (!safeBool(md[i][M.Active])) continue;
-    routes.push({ id: id, hlId: safeInt(md[i][M.High_Level_ID]), carrier: carrier,
-                  method: normKey(md[i][M.Method_Code]),
-                  code: safeStr(md[i][M.Modelling_Code]) });
+    if (!id || id < GB_FUEL_MID_FROM || id > GB_FUEL_MID_TO) continue;
+    const hlId = safeInt(md[i][M.High_Level_ID]);
+    const r = { id: id, hlId: hlId, carrier: normKey(md[i][M.Carrier_Code]),
+                method: normKey(md[i][M.Method_Code]),
+                active: safeBool(md[i][M.Active]) };
+    if (!gbHl[hlId]) { excludedNonGb.push(r); continue; }
+    inRange.push(r);
   }
-  routes.sort(function (a, b) { return a.hlId - b.hlId || a.id - b.id; });
+  inRange.sort(function (a, b) { return a.hlId - b.hlId || a.id - b.id; });
 
-  if (!routes.length) {
+  if (excludedNonGb.length) {
     Logger.log('');
-    Logger.log('  NOTHING FOUND — no active route uses any of those carrier codes.');
-    Logger.log('  Carrier codes present in Modelling_IDs:');
-    Object.keys(carrierCensus).sort().forEach(function (c) {
-      Logger.log('    ' + pad_(carrierCensus[c], 5) + '  ' + (c || '(blank)'));
+    Logger.log('--- ' + excludedNonGb.length + ' Modelling ID(s) in ' + GB_FUEL_MID_FROM + '-' +
+               GB_FUEL_MID_TO + ' EXCLUDED: their High Level ID is not GB ---');
+    excludedNonGb.forEach(function (r) {
+      Logger.log('    MID ' + pad_(r.id, 4) + '  HL ' + pad_(r.hlId, 4) + '  ' + r.method);
     });
-    return { ok: false, reason: 'no Royal Mail routes', carrierCensus: carrierCensus };
   }
-  Logger.log('  Royal Mail routes found : ' + routes.length + ' across ' +
-             Object.keys(routes.reduce(function (a, r) { a[r.hlId] = 1; return a; }, {})).length +
-             ' High Level ID(s)');
 
-  // ---- classify each route against the window ----------------------------
-  const toFix = [], already = [], needsSplit = [], noCover = [], noScope = [];
+  /* Carrier is not part of the request this time, so it is not filtered on — but a
+     non-Royal-Mail route inside 5-22 would be changed by a literal reading, and
+     that is worth seeing rather than discovering afterwards. */
+  const carriers = {};
+  inRange.forEach(function (r) { carriers[r.carrier] = (carriers[r.carrier] || 0) + 1; });
+  const carrierKeys = Object.keys(carriers).sort();
+  Logger.log('');
+  Logger.log('--- ' + inRange.length + ' route(s) in scope, by carrier ---');
+  carrierKeys.forEach(function (c) { Logger.log('    ' + pad_(carriers[c], 5) + '  ' + c); });
+  if (carrierKeys.length > 1) {
+    Logger.log('  ** More than one carrier is in range. The request named Modelling IDs, not');
+    Logger.log('     a carrier, so all of them are included. Say so if that is wrong. **');
+  }
 
-  routes.forEach(function (r) {
+  // ---- plan per route ----------------------------------------------------
+  const plan = [], already = [], noCover = [], skipped = [];
+  const wFrom = GB_FUEL_FROM, wTo = GB_FUEL_TO;
+
+  inRange.forEach(function (r) {
+    if (!r.active) { skipped.push({ r: r, reason: 'route inactive' }); return; }
+    if (!canSeeModellingId_(perms, r.id, true)) {
+      skipped.push({ r: r, reason: 'outside editable scope' }); return; }
+
     const rows = fuelCopyRowsFor_(r.id, FUEL_COPY_CODE);
-    /* Exact window match is the only safely-correctable shape. Anything that
-       merely overlaps is a period whose boundaries would have to move. */
-    const exact = rows.filter(function (x) {
-      return dateKey(x.from) === wantFrom && dateKey(x.to) === wantTo; })[0];
     const overlapping = rows.filter(function (x) {
-      return dateKey(x.from) <= wantTo && dateKey(x.to) >= wantFrom; });
+      return dateKey(x.from) <= dateKey(wTo) && dateKey(x.to) >= dateKey(wFrom); });
 
-    if (exact) {
-      if (fuelCopyValuesMatch_(exact.value, RM_FUEL_FIX_VALUE)) { already.push({ r: r, row: exact }); return; }
-      if (!canSeeModellingId_(perms, r.id, true)) { noScope.push({ r: r, row: exact }); return; }
-      toFix.push({ r: r, row: exact });
+    if (!overlapping.length) { noCover.push({ r: r, rows: rows }); return; }
+
+    /* Already right only when a single period matches the window exactly and
+       carries the value. A period that merely contains 16% across a wider span is
+       NOT the same thing: the request is that this window reads 16%, and leaving a
+       wider 16% period in place would also be claiming 16% outside it. */
+    if (overlapping.length === 1 &&
+        overlapping[0].from === wFrom && overlapping[0].to === wTo &&
+        fuelCopyValuesMatch_(overlapping[0].value, GB_FUEL_VALUE)) {
+      already.push({ r: r, row: overlapping[0] });
       return;
     }
-    if (overlapping.length) { needsSplit.push({ r: r, rows: overlapping }); return; }
-    noCover.push({ r: r });
-  });
 
-  // ---- report -------------------------------------------------------------
-  function hdr(s) { Logger.log(''); Logger.log('--- ' + s + ' ---'); }
-
-  hdr(toFix.length + ' route(s) TO CHANGE — exact window, wrong value');
-  let lastHl = null;
-  toFix.forEach(function (x) {
-    if (x.r.hlId !== lastHl) { Logger.log('  High Level ID ' + x.r.hlId + ':'); lastHl = x.r.hlId; }
-    Logger.log('    MID ' + pad_(x.r.id, 4) + '  ' + pad_(x.r.method, 30) + '  ' +
-               x.row.value.toFixed(4) + ' -> ' + RM_FUEL_FIX_VALUE.toFixed(4) +
-               '   scen ' + x.row.scenarioId + ', row id ' + x.row.id);
-  });
-  if (!toFix.length) Logger.log('  None. Every exact-window row already reads ' +
-                                RM_FUEL_FIX_VALUE + '.');
-
-  hdr(already.length + ' route(s) ALREADY CORRECT — left alone');
-  const byHl = {};
-  already.forEach(function (x) { (byHl[x.r.hlId] = byHl[x.r.hlId] || []).push(x.r.id); });
-  Object.keys(byHl).sort(function (a, b) { return safeInt(a) - safeInt(b); }).forEach(function (h) {
-    Logger.log('  HL ' + pad_(h, 4) + '  ' + byHl[h].length + ' route(s): ' +
-               byHl[h].slice(0, 20).join(', ') + (byHl[h].length > 20 ? ' ...' : ''));
-  });
-
-  hdr(needsSplit.length + ' route(s) NEEDS SPLITTING — NOT touched');
-  if (needsSplit.length) {
-    Logger.log('  Their fuel period covers the window but does not match it, so correcting');
-    Logger.log('  only ' + RM_FUEL_FIX_FROM + ' to ' + RM_FUEL_FIX_TO + ' would mean cutting one ' +
-               'period into two or three.');
-    Logger.log('  That is a change to the SHAPE of a schedule, not a value, and a mistake');
-    Logger.log('  leaves a gap the engine prices at nothing. Decide these deliberately.');
-    needsSplit.forEach(function (x) {
-      Logger.log('    HL ' + pad_(x.r.hlId, 3) + '  MID ' + pad_(x.r.id, 4) + '  ' +
-                 pad_(x.r.method, 30));
-      x.rows.forEach(function (row) { Logger.log('        ' + fuelCopyDescribe_(row)); });
+    const ops = [];
+    overlapping.forEach(function (row) {
+      const pieces = gbFuelCarve_(row, wFrom, wTo, GB_FUEL_VALUE);
+      /* Earliest piece reuses the existing row, so the row shrinks before anything
+         is inserted and no intermediate state overlaps. */
+      ops.push({ kind: 'update', rowId: row.id, was: row, piece: pieces[0] });
+      for (let i = 1; i < pieces.length; i++) {
+        ops.push({ kind: 'create', piece: pieces[i], scenarioId: row.scenarioId,
+                   currency: row.currency });
+      }
     });
-  }
-
-  hdr(noCover.length + ' route(s) have NO fuel period covering the window');
-  noCover.forEach(function (x) {
-    Logger.log('    HL ' + pad_(x.r.hlId, 3) + '  MID ' + pad_(x.r.id, 4) + '  ' + x.r.method);
+    plan.push({ r: r, ops: ops, before: overlapping });
   });
-  if (noCover.length) {
-    Logger.log('  These are priced at no fuel for those dates. Adding a period is a create,');
-    Logger.log('  not a correction, so it is not done here either.');
-  }
 
-  if (noScope.length) {
-    hdr(noScope.length + ' route(s) outside what ' + perms.email + ' can edit — skipped');
-    noScope.forEach(function (x) {
-      Logger.log('    HL ' + pad_(x.r.hlId, 3) + '  MID ' + pad_(x.r.id, 4)); });
-  }
-
-  /* The claim that High Level ID 1 is already right, checked rather than assumed —
-     it is the reference the request is stated against, so if it is not internally
-     consistent the request does not yet have one meaning. */
-  const hl1 = routes.filter(function (r) { return r.hlId === 1; });
-  if (hl1.length) {
-    const hl1Fix = toFix.filter(function (x) { return x.r.hlId === 1; }).length;
-    const hl1Split = needsSplit.filter(function (x) { return x.r.hlId === 1; }).length;
-    const hl1None = noCover.filter(function (x) { return x.r.hlId === 1; }).length;
-    hdr('High Level ID 1, the stated reference');
-    Logger.log('  ' + hl1.length + ' Royal Mail route(s): ' +
-               already.filter(function (x) { return x.r.hlId === 1; }).length + ' already ' +
-               RM_FUEL_FIX_VALUE + ', ' + hl1Fix + ' on another value, ' +
-               hl1Split + ' needing a split, ' + hl1None + ' with no cover.');
-    if (hl1Fix || hl1Split || hl1None) {
-      Logger.log('  ** So High Level ID 1 is NOT uniform. It cannot be the reference for');
-      Logger.log('     "make the others look like it" until those are resolved — and this run');
-      Logger.log('     would change HL1 routes too, which may not be what was meant.');
-    } else {
-      Logger.log('  Uniform, and already correct. It is a sound reference.');
+  // ---- report ------------------------------------------------------------
+  Logger.log('');
+  Logger.log('--- ' + plan.length + ' route(s) TO CHANGE ---');
+  let lastHl = null;
+  plan.forEach(function (p) {
+    if (p.r.hlId !== lastHl) {
+      Logger.log('  High Level ID ' + p.r.hlId + '  ' + (gbHl[p.r.hlId] || ''));
+      lastHl = p.r.hlId;
     }
+    Logger.log('    MID ' + pad_(p.r.id, 4) + '  ' + p.r.method);
+    p.before.forEach(function (b) { Logger.log('        was  ' + fuelCopyDescribe_(b)); });
+    p.ops.forEach(function (o) {
+      Logger.log('        ' + (o.kind === 'update' ? 'edit ' : 'new  ') +
+                 o.piece.from + ' to ' + o.piece.to + '  ' +
+                 pad_(safeNum(o.piece.value).toFixed(4), 8) +
+                 (o.piece.isWindow ? '   <- the window' : '   (unchanged value)'));
+    });
+  });
+  if (!plan.length) Logger.log('  None.');
+
+  Logger.log('');
+  Logger.log('--- ' + already.length + ' route(s) already exactly right — left alone ---');
+  already.forEach(function (x) {
+    Logger.log('    MID ' + pad_(x.r.id, 4) + '  HL ' + pad_(x.r.hlId, 4)); });
+
+  if (noCover.length) {
+    Logger.log('');
+    Logger.log('--- ' + noCover.length + ' route(s) have NO fuel period over the window: NOT ' +
+               'given one ---');
+    noCover.forEach(function (x) {
+      Logger.log('    MID ' + pad_(x.r.id, 4) + '  HL ' + pad_(x.r.hlId, 4) + '  ' +
+                 x.r.method + '   (' + x.rows.length + ' fuel period(s) elsewhere)');
+    });
+    Logger.log('  Adding fuel where there was none is a different claim from correcting a');
+    Logger.log('  window, so it is left as a decision rather than done by implication.');
   }
+
+  if (skipped.length) {
+    Logger.log('');
+    Logger.log('--- ' + skipped.length + ' skipped ---');
+    skipped.forEach(function (s) {
+      Logger.log('    MID ' + pad_(s.r.id, 4) + '  ' + s.reason); });
+  }
+
+  const updates = plan.reduce(function (a, p) {
+    return a + p.ops.filter(function (o) { return o.kind === 'update'; }).length; }, 0);
+  const creates = plan.reduce(function (a, p) {
+    return a + p.ops.filter(function (o) { return o.kind === 'create'; }).length; }, 0);
 
   Logger.log('');
   Logger.log('--- summary ---');
-  Logger.log('  to change       : ' + toFix.length);
-  Logger.log('  already correct : ' + already.length);
-  Logger.log('  needs splitting : ' + needsSplit.length + '   (untouched)');
-  Logger.log('  no cover        : ' + noCover.length + '   (untouched)');
-  Logger.log('  out of scope    : ' + noScope.length + '   (untouched)');
+  Logger.log('  routes to change  : ' + plan.length);
+  Logger.log('  periods edited    : ' + updates);
+  Logger.log('  periods created   : ' + creates + '   (the pieces either side of the window)');
+  Logger.log('  already correct   : ' + already.length);
+  Logger.log('  no cover          : ' + noCover.length + '   (untouched)');
+  Logger.log('  skipped           : ' + skipped.length);
+  Logger.log('  write calls       : ' + (updates + creates));
 
   if (!commit) {
     Logger.log('');
-    Logger.log('  NOTHING WRITTEN. Check the spreadsheet ID at the top, read the list, then');
-    Logger.log('  run runRoyalMailFuelFix() to apply exactly the "TO CHANGE" rows.');
+    Logger.log('  NOTHING WRITTEN. Check the spreadsheet ID at the top and the was/edit/new');
+    Logger.log('  lines, then run runGbFuelWindow() to apply exactly this.');
     return { ok: true, preview: true, spreadsheetId: spreadsheetId_(),
-             window: { from: RM_FUEL_FIX_FROM, to: RM_FUEL_FIX_TO },
-             value: RM_FUEL_FIX_VALUE,
-             toChange: toFix.map(function (x) {
-               return { hlId: x.r.hlId, modellingId: x.r.id, method: x.r.method,
-                        rowId: x.row.id, from: x.row.value, to: RM_FUEL_FIX_VALUE }; }),
-             alreadyCorrect: already.length,
-             needsSplitting: needsSplit.map(function (x) {
-               return { hlId: x.r.hlId, modellingId: x.r.id, method: x.r.method,
-                        periods: x.rows.map(function (r) {
-                          return r.from + '..' + r.to + '@' + r.value; }) }; }),
-             noCover: noCover.map(function (x) {
-               return { hlId: x.r.hlId, modellingId: x.r.id, method: x.r.method }; }),
-             outOfScope: noScope.length };
+             gbHighLevelIds: gbIds, routesToChange: plan.length,
+             periodsEdited: updates, periodsCreated: creates,
+             alreadyCorrect: already.length, noCover: noCover.length,
+             excludedNonGb: excludedNonGb.length, skipped: skipped.length,
+             carriers: carriers };
   }
 
-  if (!toFix.length) throw new Error('Nothing to change — every exact-window row already ' +
-    'reads ' + RM_FUEL_FIX_VALUE + '. The other categories are untouched by design.');
+  if (!plan.length) throw new Error('Nothing to change. Reasons are in the log above.');
 
-  // ---- write, in place ---------------------------------------------------
+  // ---- write -------------------------------------------------------------
   Logger.log('');
   Logger.log('--- writing ---');
   const done = [], failed = [];
-  toFix.forEach(function (x) {
+
+  plan.forEach(function (p) {
+    let n = 0;
     try {
-      saveSurchargeRate({
-        id:          x.row.id,              // update in place — no date moves
-        modellingId: x.r.id,
-        code:        FUEL_COPY_CODE,
-        validFrom:   RM_FUEL_FIX_FROM,
-        validTo:     RM_FUEL_FIX_TO,
-        value:       RM_FUEL_FIX_VALUE,
-        scenarioId:  x.row.scenarioId,
-        sourceRef:   RM_FUEL_FIX_REF,
-        notes:       'Corrected from ' + x.row.value.toFixed(4) + ' to ' +
-                     RM_FUEL_FIX_VALUE.toFixed(4)
+      p.ops.forEach(function (o) {
+        const q = { modellingId: p.r.id, code: FUEL_COPY_CODE,
+                    validFrom: o.piece.from, validTo: o.piece.to,
+                    value: o.piece.value,
+                    scenarioId: o.kind === 'update' ? o.was.scenarioId : o.scenarioId,
+                    sourceRef: GB_FUEL_REF,
+                    notes: o.piece.isWindow
+                      ? ('Set to ' + GB_FUEL_VALUE.toFixed(4) + ' for ' + wFrom + '..' + wTo)
+                      : ('Remainder of a period split at ' + wFrom + '..' + wTo +
+                         ', value unchanged') };
+        if (o.kind === 'update') q.id = o.rowId;
+        saveSurchargeRate(q);
+        n++;
       });
-      Logger.log('  HL ' + pad_(x.r.hlId, 3) + '  MID ' + pad_(x.r.id, 4) + '  OK  ' +
-                 x.row.value.toFixed(4) + ' -> ' + RM_FUEL_FIX_VALUE.toFixed(4));
-      done.push({ hlId: x.r.hlId, modellingId: x.r.id, rowId: x.row.id });
+      Logger.log('  MID ' + pad_(p.r.id, 4) + '  HL ' + pad_(p.r.hlId, 4) + '  OK — ' +
+                 n + ' period(s) written');
+      done.push({ modellingId: p.r.id, hlId: p.r.hlId, ops: n });
     } catch (e) {
-      Logger.log('  HL ' + pad_(x.r.hlId, 3) + '  MID ' + pad_(x.r.id, 4) + '  FAILED — ' +
-                 e.message);
-      failed.push({ hlId: x.r.hlId, modellingId: x.r.id, error: e.message });
+      /* Part way through carving is the bad case: the row may already be shrunk
+         with its remainder not yet created, which is a GAP the engine prices at
+         nothing. Named separately from an outright failure. */
+      const partial = n > 0 && n < p.ops.length;
+      Logger.log('  MID ' + pad_(p.r.id, 4) + '  HL ' + pad_(p.r.hlId, 4) + '  ' +
+                 (partial ? '** PART DONE **' : 'FAILED') + ' — ' + e.message);
+      if (partial) {
+        Logger.log('      ' + n + ' of ' + p.ops.length + ' written. This route may have a GAP');
+        Logger.log('      in its fuel schedule now. Re-run the preview before anything else.');
+      }
+      failed.push({ modellingId: p.r.id, hlId: p.r.hlId, error: e.message, partial: partial });
     }
   });
 
+  const partials = failed.filter(function (f) { return f.partial; });
   Logger.log('');
   Logger.log('--- done in ' + Math.round((Date.now() - t0) / 1000) + 's ---');
-  Logger.log('  changed : ' + done.length);
+  Logger.log('  changed : ' + done.length + ' route(s)');
   Logger.log('  failed  : ' + failed.length);
+  if (partials.length) {
+    Logger.log('  ** PART DONE, may have a gap: ' +
+               partials.map(function (f) { return f.modellingId; }).join(', '));
+  }
   Logger.log('');
-  Logger.log('  Each row was updated in place, so Rate_Surcharge_Amends shows the value');
-  Logger.log('  moving and the Audit_Log names who moved it. Re-run the calculation and');
-  Logger.log('  publish for this to reach the forecast.');
+  Logger.log('  Every period went through saveSurchargeRate, so it is all in');
+  Logger.log('  Rate_Surcharge_Amends and the Audit_Log. Run the calculation and publish for');
+  Logger.log('  this to reach the forecast.');
 
   return { ok: !failed.length, preview: false, changed: done.length, failed: failed,
-           needsSplitting: needsSplit.length, noCover: noCover.length,
-           seconds: Math.round((Date.now() - t0) / 1000) };
+           partial: partials, seconds: Math.round((Date.now() - t0) / 1000) };
 }
 
 /** Report what would change. Writes nothing. */
-function previewRoyalMailFuelFix() { return fixRoyalMailFuelWindow(false); }
+function previewGbFuelWindow() { return setGbFuelWindow(false); }
 /** Apply it. */
-function runRoyalMailFuelFix()     { return fixRoyalMailFuelWindow(true); }
+function runGbFuelWindow()     { return setGbFuelWindow(true); }
