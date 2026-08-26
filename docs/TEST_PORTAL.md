@@ -218,3 +218,39 @@ and that nobody has yet said whether that is deliberate.
 
 **Modelling IDs 5-8 are the outliers** if one schedule across all 18 routes is ever wanted. 5 and
 6 have no mid-year change at all.
+
+---
+
+## Consolidated to production only — 2026-08-26
+
+The multi-worktree, multi-branch layout this file was written to document is gone.
+
+| Before | After |
+|---|---|
+| 4 working directories | **1** — `C:\tools\postage-forecast-portal` |
+| 14 branches | **`main`**, carrying everything |
+| `.clasp.json` → test `1Br6gJdV…` | **`.clasp.json` → production `1JHYSult…`** |
+
+**`clasp push` from that directory is now a production deploy, live immediately**
+because production serves `@HEAD`. Nothing prompts. That is the point of the change —
+"which portal am I pushing to" cost real time — but it removes a structural
+safeguard and replaces it with a procedural one.
+
+### If the test project still exists
+
+Its `scriptId` is `1Br6gJdVW1-nOeOamrVhpMYCp5uCO79LQK5_m35eTbI9vkIGsDgZbeOiG` and its
+`SPREADSHEET_ID` property points at `1YTwIvSr…` (`Copy of Postage Forecast — Data`).
+No local `.clasp.json` points at it any more, so pushing to it means a scratch
+directory with its own `.clasp.json` — the pattern used throughout August 2026.
+
+### If the test project is deleted, delete the test SPREADSHEET too
+
+Not optional, and the order matters. A test *project* left alive with its test
+*spreadsheet* deleted falls back to `SPREADSHEET_ID_FALLBACK`, **which is
+production** — so it would silently read and write live data with no signal but
+`showEnvironment()`. That is FINDINGS.md **S14** firing for real. Either both go or
+both stay.
+
+Also: `compareRatesWithTestCopy()` and `previewRateCopyFromTestCopy()` need **both**
+spreadsheets to exist. Once the copy is binned there is no way to check the two ever
+matched. **Confirm parity before deleting, never after.**

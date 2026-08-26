@@ -16,15 +16,22 @@ really Apps Script `.gs` files (renamed for this repo/editor).
 This is clasp-managed: `.clasp.json` points at the Apps Script project
 (`scriptId`), and `.js` files here map 1:1 to script files there.
 
-> **Which project does `clasp push` hit, and which spreadsheet does it then write?**
-> These are two separate questions and the answers pull in opposite directions.
-> The `scriptId` committed in every worktree's `.clasp.json` is the **TEST** script
-> project (`1Br6gJdV…`); production (`1JHYSult…`) appears in **no** `.clasp.json`.
-> But `SPREADSHEET_ID_FALLBACK` **is the production spreadsheet**, so a test project
-> with no `SPREADSHEET_ID` property set reads and writes **production data**
-> (FINDINGS.md S14). The safe default is the dangerous one, and the only signal is
-> `showEnvironment()`. IDs, the trap, and the test/production performance gap are all
-> in **`docs/TEST_PORTAL.md`** — read it before running anything that writes.
+> ## ⚠️ `clasp push` FROM THIS DIRECTORY GOES STRAIGHT TO PRODUCTION
+>
+> Since 2026-08-26 the committed `scriptId` is **production** (`1JHYSult…`), and this
+> is the only working directory — the `pfp-bulk`, `pfp-merge` and `pfp-actuals`
+> worktrees are gone and `main` carries everything.
+>
+> Production has an **`@HEAD` deployment**, so a push is **live to users the moment
+> it completes**. There is no staging step and nothing asks you to confirm. Its `@1`
+> deployment stays pinned to an older version and is the way back.
+>
+> That is a deliberate trade: one directory, one branch, no more "which portal am I
+> pushing to". The cost is that the safety net is now procedural rather than
+> structural — run `showEnvironment()` before anything that writes, and read
+> **`docs/TEST_PORTAL.md`** for the test project (if it still exists) and for
+> FINDINGS.md **S14**, which is why an unset `SPREADSHEET_ID` property is more
+> dangerous than it looks: the fallback **is** the production spreadsheet.
 
 ## Commands
 
