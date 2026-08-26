@@ -16,6 +16,16 @@ really Apps Script `.gs` files (renamed for this repo/editor).
 This is clasp-managed: `.clasp.json` points at the Apps Script project
 (`scriptId`), and `.js` files here map 1:1 to script files there.
 
+> **Which project does `clasp push` hit, and which spreadsheet does it then write?**
+> These are two separate questions and the answers pull in opposite directions.
+> The `scriptId` committed in every worktree's `.clasp.json` is the **TEST** script
+> project (`1Br6gJdV…`); production (`1JHYSult…`) appears in **no** `.clasp.json`.
+> But `SPREADSHEET_ID_FALLBACK` **is the production spreadsheet**, so a test project
+> with no `SPREADSHEET_ID` property set reads and writes **production data**
+> (FINDINGS.md S14). The safe default is the dangerous one, and the only signal is
+> `showEnvironment()`. IDs, the trap, and the test/production performance gap are all
+> in **`docs/TEST_PORTAL.md`** — read it before running anything that writes.
+
 ## Commands
 
 There is no build step, package manager, bundler, or test runner in the
@@ -31,6 +41,7 @@ conventional sense — this is Apps Script, deployed via `clasp`.
 object. Key ones, roughly in the order you'd use them on a fresh setup:
 
 - `showEnvironment()` (`utils.js`) — **run this first**: which spreadsheet this project is pointed at, and whether that came from a Script Property or the committed fallback
+- `pointThisProjectAtTestSpreadsheet()` / `clearTestSpreadsheetOverride()` (`utils.js`) — set or remove the `SPREADSHEET_ID` override. Both refuse to run anywhere but the test script project, and the setter refuses if the ID it is given is production's
 - `setupAll()` (`setup.js`) — idempotent: creates all 30+ tabs and seeds reference data
 - `migratePreflight()` / `migrateAll()` / `migrateVerify()` (`migrate.js`) — one-time load from the original workbook (`SOURCE_SPREADSHEET_ID` property, else `SOURCE_SPREADSHEET_ID_FALLBACK`)
 - `runEngineUnitTests()` / `runParityTest()` (`enginetest.js`) — engine correctness and parity against the original workbook's Output tab

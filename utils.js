@@ -780,3 +780,184 @@ function showEnvironment() {
     source: source ? { id: source.id, from: source.from } : null
   };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POINTING A TEST PROJECT AT A TEST SPREADSHEET
+//
+// The one gap Phase 0 left open, written down as code instead of a checklist
+// step. FINDINGS.md S14: the committed scriptId is the TEST project, but
+// SPREADSHEET_ID_FALLBACK is the PRODUCTION spreadsheet — so a test project with
+// no SPREADSHEET_ID property set reads and writes production, and the only
+// signal is remembering to run showEnvironment() and read the output.
+//
+// The safe default is the dangerous one. These two functions make the switch a
+// single click with the guards built in, rather than a hand-typed Script
+// Property that nothing checks.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The script project these functions are willing to repoint.
+ *
+ * Hardcoded on purpose. Repointing is only ever correct on a test project, and
+ * "which project am I in" is precisely the thing that is easy to get wrong at
+ * 5pm with four editor tabs open. If the running project is not this one, both
+ * functions below refuse before touching anything.
+ */
+const TEST_SCRIPT_PROJECT_ID =
+  '1Br6gJdVW1-nOeOamrVhpMYCp5uCO79LQK5_m35eTbI9vkIGsDgZbeOiG';
+
+/**
+ * The test spreadsheet to point at. Paste the copy's file ID here, push, run.
+ *
+ * Left as a placeholder rather than a real ID so that pushing this file cannot
+ * by itself change where anything points — the function refuses until someone
+ * has deliberately edited this line.
+ */
+const TEST_SPREADSHEET_ID = '1YTwIvSrLwaObPAdIT0G7-v_o1RG2J2nOcDvVKNJEoSU';
+
+/**
+ * Forget everything cached about the spreadsheet we were pointed at.
+ *
+ * Changing the target mid-execution invalidates FIVE caches, not the obvious
+ * one, and the obvious one is the least dangerous:
+ *
+ *   _ssCache_         the Spreadsheet object
+ *   _sheetCache_      Sheet objects BY NAME — these are the hazard. getSheet_
+ *                     ('Rate_Surcharge') would keep returning the sheet in the
+ *                     OLD spreadsheet, so a write after the switch lands in the
+ *                     file we just switched away from. Which, here, is production.
+ *   _sheetDataCache_  row data read before the switch
+ *   _nextIdCache_     next-ID values computed from the old file's rows
+ *   _midMetaCache_    (auth.gs) Modelling ID -> High Level ID / carrier
+ *
+ * Today the setter below is the last thing in its execution, so only the final
+ * showEnvironment() reads through these — but leaving a stale Sheet object
+ * reachable in a function whose entire purpose is preventing writes to
+ * production is the wrong kind of nearly-safe.
+ */
+function resetEnvironmentCaches_() {
+  _ssCache_ = null;
+  for (const k in _envIds_)         delete _envIds_[k];
+  for (const k in _sheetCache_)     delete _sheetCache_[k];
+  for (const k in _sheetDataCache_) delete _sheetDataCache_[k];
+  for (const k in _nextIdCache_)    delete _nextIdCache_[k];
+  // Declared in auth.gs. Assigned from inside a function body, which is allowed —
+  // the load-order rule only bans reading another file's binding at top level.
+  if (typeof _midMetaCache_ !== 'undefined') _midMetaCache_ = null;
+}
+
+/** Refuse to run anywhere but the known test project. */
+function assertIsTestProject_(what) {
+  let running = '';
+  try { running = ScriptApp.getScriptId(); } catch (e) { running = ''; }
+  if (running === TEST_SCRIPT_PROJECT_ID) return running;
+  throw new Error('REFUSING to ' + what + '. This is script project "' +
+    (running || '(could not be read)') + '", and this function only runs on the test ' +
+    'project "' + TEST_SCRIPT_PROJECT_ID + '". If you meant to repoint a different test ' +
+    'project, change TEST_SCRIPT_PROJECT_ID in utils.gs first — deliberately.');
+}
+
+/**
+ * Set the SPREADSHEET_ID Script Property to the test spreadsheet, then prove it.
+ *
+ * Run from the Apps Script editor's Run menu. Every guard below exists because
+ * the failure it prevents writes to the production forecast:
+ *
+ *   1. Not the test project            -> refuse (assertIsTestProject_)
+ *   2. Placeholder not filled in       -> refuse
+ *   3. The ID *is* the production one  -> refuse. This is the whole point: a
+ *      copy-paste from the wrong browser tab is the single most likely mistake
+ *      here, and it is silent — the property would be set, showEnvironment()
+ *      would say "the SPREADSHEET_ID Script Property", and it would still be
+ *      production. Comparing against SPREADSHEET_ID_FALLBACK catches it.
+ *   4. The ID cannot be opened         -> refuse, and leave the property alone.
+ *      Set first and validated after, a typo would leave the project pointing at
+ *      nothing, which fails every later call with a confusing error.
+ *
+ * Only then is the property written, and showEnvironment() is run immediately so
+ * the last thing in the log is the truth rather than a claim.
+ */
+function pointThisProjectAtTestSpreadsheet() {
+  requireMaintenance_();
+  Logger.log('=== POINTING THIS PROJECT AT A TEST SPREADSHEET ===');
+
+  const running = assertIsTestProject_('repoint this project');
+  Logger.log('  script project  : ' + running + '   (confirmed test)');
+
+  const wanted = safeStr(TEST_SPREADSHEET_ID);
+
+  if (!wanted || wanted === 'PASTE_THE_TEST_SPREADSHEET_ID_HERE') {
+    throw new Error('TEST_SPREADSHEET_ID in utils.gs is still the placeholder. Put the ' +
+      'test copy file ID there (the long string between /d/ and /edit in its URL), push, ' +
+      'and run this again.');
+  }
+
+  if (wanted === SPREADSHEET_ID_FALLBACK) {
+    throw new Error('REFUSING: that is the PRODUCTION spreadsheet ID (' +
+      SPREADSHEET_ID_FALLBACK + '), the same one the committed fallback already uses. ' +
+      'Setting the property to it would change nothing except to make this project look ' +
+      'as though it had been made safe. Use the ID of the COPY.');
+  }
+
+  /* Open it before writing anything, so a typo cannot leave the project pointed
+     at a spreadsheet that does not exist. */
+  let name = '';
+  try {
+    name = SpreadsheetApp.openById(wanted).getName();
+  } catch (e) {
+    throw new Error('REFUSING: cannot open "' + wanted + '" — ' + e.message +
+      '  Nothing was changed. Check the ID is a Google Sheet this account can open.');
+  }
+  Logger.log('  target          : ' + wanted);
+  Logger.log('  file name       : ' + name);
+
+  /* A copy of production carries production's real financial data. Worth saying
+     out loud at the moment the switch is made, because "it is only the test one"
+     is how a copy ends up shared more widely than its original. */
+  Logger.log('');
+  Logger.log('  NOTE: a copy of production holds production financial data. Share it on');
+  Logger.log('  the same terms as production — copying it does not make it less real.');
+
+  PropertiesService.getScriptProperties().setProperty('SPREADSHEET_ID', wanted);
+
+  /* requireMaintenance_ above has already read Permissions from the OLD target
+     and memoised the fallback, so every cache keyed on that file is now wrong. */
+  resetEnvironmentCaches_();
+
+  Logger.log('');
+  Logger.log('  Property set. Verifying by running showEnvironment() now — read its');
+  Logger.log('  "resolved from" line, and do not trust this message over that one.');
+  Logger.log('');
+  const env = showEnvironment();
+
+  if (env.target.id !== wanted || env.target.from !== 'property') {
+    throw new Error('The property was written but showEnvironment() does not agree ' +
+      '(id ' + env.target.id + ', from ' + env.target.from + '). Do not run anything ' +
+      'that writes until this is understood.');
+  }
+  return { ok: true, scriptId: running, spreadsheetId: wanted, name: name };
+}
+
+/**
+ * Remove the override and fall back to the committed literal.
+ *
+ * The way back, so the switch is reversible. Says plainly what falling back
+ * MEANS here, which is not "safe" — the fallback is production.
+ */
+function clearTestSpreadsheetOverride() {
+  requireMaintenance_();
+  Logger.log('=== CLEARING THE SPREADSHEET_ID OVERRIDE ===');
+  const running = assertIsTestProject_('clear this project\'s override');
+  Logger.log('  script project  : ' + running + '   (confirmed test)');
+
+  PropertiesService.getScriptProperties().deleteProperty('SPREADSHEET_ID');
+  resetEnvironmentCaches_();
+
+  Logger.log('');
+  Logger.log('  ** This project now reads the COMMITTED FALLBACK, which is PRODUCTION');
+  Logger.log('     (' + SPREADSHEET_ID_FALLBACK + '). Do not run anything that writes.');
+  Logger.log('');
+  const env = showEnvironment();
+  return { ok: true, scriptId: running, nowPointingAt: env.target.id,
+           resolvedFrom: env.target.from };
+}
