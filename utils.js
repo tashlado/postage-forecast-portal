@@ -479,6 +479,69 @@ function pad_(v, n) {
 function normKey(v) { return safeStr(v).toUpperCase(); }
 
 
+/**
+ * A CSV text into a rectangular array of strings.
+ *
+ * Written out rather than done with `split(',')` because every one of the
+ * shortcuts that makes split() tempting is violated by a real export:
+ *
+ *   - A treatment type is "Weight Loss, GLP-1" often enough that an unquoted
+ *     split silently shifts every later column left by one. That does not throw;
+ *     it lands a month in the count column and a count in the cost column, so
+ *     the import then reports a number that is wrong rather than an error that
+ *     is right.
+ *   - A quoted field may itself contain a newline, so the file cannot be split
+ *     into records by line first and fields second.
+ *   - "" inside a quoted field is one literal quote, not the end of the field.
+ *   - The line ending may be CRLF, LF or (from an old Mac export) a bare CR, and
+ *     a stray CR left on the last field of a row makes the header "Count" fail
+ *     to match, for a reason invisible on screen.
+ *   - A file saved by Excel as UTF-8 starts with a byte-order mark, which
+ *     attaches itself to the first header and makes it match nothing.
+ *
+ * Rows are NOT padded to equal length — a short row is returned short, so the
+ * caller can tell a genuinely blank trailing cell from a truncated row. Wholly
+ * empty rows are dropped, because a trailing newline is universal and means
+ * nothing.
+ *
+ * @param {string} text
+ * @return {Array<Array<string>>}
+ */
+function parseCsv_(text) {
+  let s = (text === null || text === undefined) ? '' : String(text);
+  if (s.charCodeAt(0) === 0xFEFF) s = s.slice(1);          // strip the BOM
+  s = s.replace(/\r\n?/g, '\n');                            // CRLF and bare CR to LF
+
+  const rows = [];
+  let field = '', row = [], inQuotes = false;
+
+  for (let i = 0; i < s.length; i++) {
+    const ch = s.charAt(i);
+
+    if (inQuotes) {
+      if (ch === '"') {
+        if (s.charAt(i + 1) === '"') { field += '"'; i++; }  // an escaped quote
+        else inQuotes = false;
+      } else {
+        field += ch;
+      }
+      continue;
+    }
+
+    if (ch === '"')       { inQuotes = true; }
+    else if (ch === ',')  { row.push(field); field = ''; }
+    else if (ch === '\n') { row.push(field); field = ''; rows.push(row); row = []; }
+    else                  { field += ch; }
+  }
+  // whatever is left when the text runs out is the last field of the last row
+  if (field !== '' || row.length) { row.push(field); rows.push(row); }
+
+  return rows.filter(function (r) {
+    return r.some(function (c) { return safeStr(c) !== ''; });
+  });
+}
+
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 5. DATES
 //

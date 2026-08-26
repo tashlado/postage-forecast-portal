@@ -431,35 +431,11 @@ function diagnoseActualsTreatments() {
   }
 
   // ---- columns, found the same way the importer finds them ----------------
-  const hdrRaw  = rows[0].map(function (h) { return safeStr(h); });
-  const hdrNorm = hdrRaw.map(normHeader_);
-  function col(candidates, label) {
-    for (let ci = 0; ci < candidates.length; ci++) {
-      const exact = hdrNorm.indexOf(normHeader_(candidates[ci]));
-      if (exact >= 0) return exact;
-    }
-    for (let ci = 0; ci < candidates.length; ci++) {
-      const want = normHeader_(candidates[ci]);
-      for (let hi = 0; hi < hdrNorm.length; hi++) {
-        if (!hdrNorm[hi]) continue;
-        if (hdrNorm[hi].indexOf(want) >= 0 || want.indexOf(hdrNorm[hi]) >= 0) return hi;
-      }
-    }
-    throw new Error('The extract has no ' + label + ' column. Columns found: ' +
-                    hdrRaw.join(' | '));
-  }
-  const cCountry = col(['Country Code', 'Country'], 'country'),
-        cBrand   = col(['Brand'], 'brand'),
-        cTreat   = col(['Treatment Type', 'Treatment'], 'treatment type'),
-        cCount   = col(['Count', 'Shipments', 'Orders'], 'shipment count'),
-        cCost    = col(['Sum of Cost Of Shipping', 'Cost Of Shipping', 'Total Cost', 'Cost'],
-                       'shipping cost');
+  const X = extractStandardColumns_(rows[0]);
+  const cCountry = X.cCountry, cBrand = X.cBrand, cTreat = X.cTreat,
+        cCount = X.cCount, cCost = X.cCost;
   Logger.log('');
-  Logger.log('  columns matched:');
-  [['brand', cBrand], ['country', cCountry], ['treatment', cTreat],
-   ['count', cCount], ['cost', cCost]].forEach(function (x) {
-    Logger.log('    ' + pad_(x[0], 10) + ' -> "' + hdrRaw[x[1]] + '"');
-  });
+  logExtractColumns_(X.cols);
 
   // ---- the segments the importer can actually reach -----------------------
   const hl = getAllData_(SHEET.HIGH_LEVEL_IDS), H = COL.HIGH_LEVEL_IDS;
@@ -668,39 +644,13 @@ function diagnoseActualsExtract(brand, geo, treatment) {
     return { ok: false, reason: 'empty' };
   }
 
-  const hdrRaw  = rows[0].map(function (h) { return safeStr(h); });
-  const hdrNorm = hdrRaw.map(normHeader_);
-  function find(candidates) {
-    for (let ci = 0; ci < candidates.length; ci++) {
-      const exact = hdrNorm.indexOf(normHeader_(candidates[ci]));
-      if (exact >= 0) return exact;
-    }
-    for (let ci = 0; ci < candidates.length; ci++) {
-      const want = normHeader_(candidates[ci]);
-      for (let hi = 0; hi < hdrNorm.length; hi++) {
-        if (!hdrNorm[hi]) continue;
-        if (hdrNorm[hi].indexOf(want) >= 0 || want.indexOf(hdrNorm[hi]) >= 0) return hi;
-      }
-    }
-    return -1;
-  }
-  function need(candidates, label) {
-    const i = find(candidates);
-    if (i < 0) throw new Error('The extract has no ' + label + ' column. Columns found: ' +
-                               hdrRaw.join(' | '));
-    return i;
-  }
-  const cCountry = need(['Country Code', 'Country'], 'country'),
-        cBrand   = need(['Brand'], 'brand'),
-        cTreat   = need(['Treatment Type', 'Treatment'], 'treatment type'),
-        cMonth   = need(['Dispatched Date: Month', 'Dispatched Month', 'Month'], 'month'),
-        cCount   = need(['Count', 'Shipments', 'Orders'], 'shipment count'),
-        cCost    = need(['Sum of Cost Of Shipping', 'Cost Of Shipping', 'Total Cost', 'Cost'],
-                        'shipping cost');
   /* Carrier and method are optional rather than required: an older extract that
-     predates them should still give the summaries above, not an exception. */
-  const cCarrier = find(['Delivery Carrier', 'Carrier']),
-        cMethod  = find(['Delivery Method', 'Method', 'Service']);
+     predates them should still give the summaries below, not an exception. */
+  const X = extractStandardColumns_(rows[0]);
+  const hdrRaw = X.cols.raw;
+  const cCountry = X.cCountry, cBrand = X.cBrand, cTreat = X.cTreat,
+        cMonth = X.cMonth, cCount = X.cCount, cCost = X.cCost,
+        cCarrier = X.cCarrier, cMethod = X.cMethod;
   Logger.log('  carrier column : ' + (cCarrier >= 0 ? '"' + hdrRaw[cCarrier] + '"' : 'NOT PRESENT'));
   Logger.log('  method column  : ' + (cMethod  >= 0 ? '"' + hdrRaw[cMethod]  + '"' : 'NOT PRESENT'));
   if (cCarrier < 0 && cMethod < 0) {
@@ -964,6 +914,39 @@ function clearActuals() {
 }
 
 
+/**
+ * Empty the staging tab, so a REPLACE upload starts from nothing.
+ *
+ * A different tab from clearActuals(), and worth being clear about which is
+ * which, because the names are one word apart and the consequences are not.
+ * clearActuals() removes the derived Actuals rows — the ones the portal shows
+ * against the forecast — and those have an Amends history, so removing them is
+ * recoverable. This removes the raw extract in Actuals_Import, which has no
+ * history table at all: the staging tab is a scratch space by design, so what is
+ * cleared here is gone unless the original file still exists somewhere.
+ *
+ * Nothing derived is touched. The Actuals rows a previous import produced stay
+ * exactly as they are until an import runs again and overwrites them by
+ * segment-month.
+ */
+function clearActualsImport_() {
+  const before = Math.max(getSheet_(SHEET.ACTUALS_IMPORT).getLastRow() - 1, 0);
+  clearDataRows_(SHEET.ACTUALS_IMPORT);
+  logAudit_('DELETE', SHEET.ACTUALS_IMPORT, '', '', '',
+            String(before) + ' rows', 'clearActualsImport', true);
+  return before;
+}
+
+/** The same, from the editor. */
+function clearActualsImport() {
+  requireMaintenance_();
+  const before = clearActualsImport_();
+  Logger.log('Removed ' + before + ' staged extract row(s) from ' + SHEET.ACTUALS_IMPORT + '.');
+  Logger.log('The Actuals tab itself is untouched — use clearActuals() for that.');
+  return { removed: before };
+}
+
+
 // ─────────────────────────────────────────────────────────────────────────────
 // IMPORTING FROM THE MONTHLY EXTRACT
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1001,6 +984,200 @@ function normHeader_(s) {
   return safeStr(s).toUpperCase().replace(/[^A-Z0-9]/g, '');
 }
 
+
+/**
+ * The extract's columns, located by name rather than by position.
+ *
+ * One matcher, used by the importer and by every diagnostic that reads the same
+ * staging tab. It was four near-copies of the same twenty lines, which is the
+ * worst possible arrangement for this particular job: the whole point of the
+ * diagnostics is to tell you what the importer will do, and they can only do
+ * that if they find columns exactly the way the importer finds them. A tightened
+ * candidate list in one copy and not the others makes the diagnostic disagree
+ * with the import and there is no way to tell from the output which one is right.
+ *
+ * Matching is two-pass, in this order, and the order matters:
+ *
+ *   1. Exact, on the normalised name. Every candidate is tried before any
+ *      fuzzy match is considered, so a file that has both "Count" and
+ *      "Count Of Orders" binds to "Count" rather than to whichever happened to
+ *      be leftmost.
+ *   2. Substring, either direction. This is what survives "Sum of Cost Of
+ *      Shipping (£)" — the pound sign is two bytes in UTF-8 and comes back as
+ *      "Â£" whenever something in the chain decodes it as Latin-1, and the
+ *      trailing unit differs between exports.
+ *
+ * A column, once bound, is CLAIMED, and no later label may bind to it. That is
+ * not tidiness, it is the fix for a specific way this used to go wrong: the
+ * reverse half of pass 2 lets a candidate contain a header, and "COUNTRYCODE"
+ * contains "COUNT". So an extract whose country column was named something
+ * unrecognised — "Geo", say — would bind country to the SHIPMENT COUNT column,
+ * pass every remaining check, and import with every row's country set to a
+ * number. Claiming makes that impossible: Count is bound exactly, before any
+ * fuzzy match is tried, and country then finds nothing and says so.
+ *
+ * Because pass 2 can bind a column on a partial name, `how()` records which pass
+ * found each one. Anything matched fuzzily is worth printing before its numbers
+ * are believed — a cost column found by substring may be the wrong cost column,
+ * and the import cannot tell.
+ *
+ * @param {Array} headerRow  row 0 of the staging tab or CSV
+ * @return {Object} { raw, norm, find, need, resolve, how, matched }
+ */
+function extractColumns_(headerRow) {
+  const raw  = (headerRow || []).map(function (h) { return safeStr(h); });
+  const norm = raw.map(normHeader_);
+  const how  = {};
+  const claimed = {};
+
+  function exactIndex(candidates) {
+    for (let ci = 0; ci < candidates.length; ci++) {
+      const want = normHeader_(candidates[ci]);
+      if (!want) continue;
+      for (let hi = 0; hi < norm.length; hi++) {
+        if (claimed[hi]) continue;
+        if (norm[hi] === want) return { index: hi, candidate: candidates[ci] };
+      }
+    }
+    return null;
+  }
+
+  function fuzzyIndex(candidates) {
+    for (let ci = 0; ci < candidates.length; ci++) {
+      const want = normHeader_(candidates[ci]);
+      if (!want) continue;
+      for (let hi = 0; hi < norm.length; hi++) {
+        if (claimed[hi] || !norm[hi]) continue;
+        if (norm[hi].indexOf(want) >= 0 || want.indexOf(norm[hi]) >= 0) {
+          return { index: hi, candidate: candidates[ci] };
+        }
+      }
+    }
+    return null;
+  }
+
+  function bind(hit, label, mode) {
+    claimed[hit.index] = true;
+    if (label) how[label] = { index: hit.index, mode: mode, candidate: hit.candidate };
+    return hit.index;
+  }
+
+  function missing(candidates, label) {
+    return new Error('The extract has no ' + label + ' column. It needs one named ' +
+      'something like "' + candidates[0] + '". Columns found: ' +
+      (raw.length ? raw.join(' | ') : '(none — the file has no header row)'));
+  }
+
+  /** Index, or -1. Optional columns go through this one. */
+  function find(candidates, label) {
+    const e = exactIndex(candidates);
+    if (e) return bind(e, label, 'exact');
+    const f = fuzzyIndex(candidates);
+    if (f) return bind(f, label, 'fuzzy');
+    return -1;
+  }
+
+  /** Index, or an error naming what was wanted and what was actually there. */
+  function need(candidates, label) {
+    const i = find(candidates, label);
+    if (i < 0) throw missing(candidates, label);
+    return i;
+  }
+
+  /**
+   * Resolve several columns together: every exact match claimed first, across
+   * all of them, and only then the fuzzy fallbacks. Resolving one at a time
+   * cannot get this right, because whichever column is asked for first gets to
+   * fuzzy-match before the others have claimed their exact headers.
+   *
+   * @param {Array} specs  [{ label, candidates, required }]
+   * @return {Object} label -> index (-1 for an optional column that is absent)
+   */
+  function resolve(specs) {
+    const out = {}, pending = [];
+    specs.forEach(function (s) {
+      const e = exactIndex(s.candidates);
+      if (e) out[s.label] = bind(e, s.label, 'exact');
+      else pending.push(s);
+    });
+    pending.forEach(function (s) {
+      const f = fuzzyIndex(s.candidates);
+      if (f) out[s.label] = bind(f, s.label, 'fuzzy');
+      else if (s.required) throw missing(s.candidates, s.label);
+      else out[s.label] = -1;
+    });
+    return out;
+  }
+
+  return {
+    raw: raw, norm: norm, find: find, need: need, resolve: resolve,
+    how: function (label) { return how[label] || null; },
+    /** [[label, index, mode, header], ...] for the labels resolved so far. */
+    matched: function () {
+      return Object.keys(how).map(function (k) {
+        return [k, how[k].index, how[k].mode, raw[how[k].index]];
+      });
+    }
+  };
+}
+
+
+/**
+ * The six columns every reader of the extract needs, plus the two it may not
+ * have. Kept here so adding an accepted spelling of a header is one edit, and
+ * so the importer and the diagnostics cannot drift apart on what they accept.
+ *
+ * Carrier and method are optional on purpose: the import aggregates them away
+ * anyway, and an older extract that predates the columns should still load
+ * rather than throw.
+ */
+function extractStandardColumns_(headerRow) {
+  const c = extractColumns_(headerRow);
+  /* Order within this list only decides which of two equally-good fuzzy matches
+     wins; every exact match is claimed before any of them is tried. The narrow
+     names are first anyway, so a genuinely ambiguous file resolves the specific
+     column before the vague one. */
+  const r = c.resolve([
+    { label: 'shipment count', candidates: ['Count', 'Shipments', 'Orders'], required: true },
+    { label: 'shipping cost',  candidates: ['Sum of Cost Of Shipping', 'Cost Of Shipping',
+                                            'Total Cost', 'Cost'], required: true },
+    { label: 'country',        candidates: ['Country Code', 'Country'], required: true },
+    { label: 'brand',          candidates: ['Brand'], required: true },
+    { label: 'treatment type', candidates: ['Treatment Type', 'Treatment'], required: true },
+    { label: 'month',          candidates: ['Dispatched Date: Month', 'Dispatched Month',
+                                            'Month'], required: true },
+    { label: 'carrier',        candidates: ['Delivery Carrier', 'Carrier'], required: false },
+    { label: 'method',         candidates: ['Delivery Method', 'Method', 'Service'],
+                               required: false }
+  ]);
+  return {
+    cols:     c,
+    cCountry: r['country'],
+    cBrand:   r['brand'],
+    cTreat:   r['treatment type'],
+    cMonth:   r['month'],
+    cCount:   r['shipment count'],
+    cCost:    r['shipping cost'],
+    cCarrier: r['carrier'],
+    cMethod:  r['method']
+  };
+}
+
+
+/** The matched columns, and how each was found, into the log. */
+function logExtractColumns_(cols) {
+  Logger.log('  columns matched:');
+  cols.matched().forEach(function (m) {
+    Logger.log('    ' + pad_(m[0], 10) + '  ' + pad_(m[2], 6) + '  "' + m[3] + '"');
+  });
+  const fuzzy = cols.matched().filter(function (m) { return m[2] === 'fuzzy'; });
+  if (fuzzy.length) {
+    Logger.log('  ** ' + fuzzy.map(function (m) { return m[0]; }).join(', ') +
+               ' matched by substring, not by name. Confirm the columns above are');
+    Logger.log('     the right ones before believing the numbers below. **');
+  }
+}
+
 function wlTreatments_() {
   const raw = configStr('ACTUALS_WL_TREATMENTS', 'WeightLossGlp1');
   const set = {};
@@ -1034,10 +1211,31 @@ function parseExtractNumber_(v) {
 
 /**
  * Read the staging tab, map it, and report. Writes nothing unless told to.
+ *
+ * The gate and the work are split so the portal's CSV upload can reach the same
+ * calculation without inheriting this one's permission check. The upload has its
+ * own, at least as strict (see requireImportActuals_ in auth.gs), and if it
+ * called this wrapper it would be checked twice against two different rules —
+ * the reliable way to end up with a button that is authorised by one rule and
+ * refused by the other. There is deliberately no second aggregation path: both
+ * entry points run importActualsFromStagingCore_, so an actual row created by
+ * the upload is created by the same code that creates it from the editor.
+ *
  * @param {boolean} commit
  */
 function importActualsFromStaging(commit) {
   requireMaintenance_();
+  return importActualsFromStagingCore_(commit);
+}
+
+
+/**
+ * The import itself. Assumes the caller has already established the right to run
+ * it, and returns a report structured for a screen as well as logged for a human.
+ *
+ * @param {boolean} commit
+ */
+function importActualsFromStagingCore_(commit) {
   Logger.log(commit ? '=== IMPORTING ACTUALS ===' : '=== ACTUALS IMPORT PREVIEW (nothing written) ===');
 
   prewarmSheetCache_([SHEET.ACTUALS_IMPORT, SHEET.HIGH_LEVEL_IDS, SHEET.ACTUALS,
@@ -1050,46 +1248,12 @@ function importActualsFromStaging(commit) {
     return { ok: false, reason: 'empty' };
   }
 
-  // Columns are found by name, so a reordered extract still works. Names are
-  // compared with everything except letters and digits stripped out, because a
-  // header like "Sum of Cost Of Shipping (£)" is fragile in ways that have
-  // nothing to do with the data: the pound sign is two bytes in UTF-8 and comes
-  // back as "Â£" whenever something in the chain reads it as Latin-1. Spacing,
-  // capitalisation and punctuation vary between exports too.
-  const hdrRaw = rows[0].map(function (h) { return safeStr(h); });
-  const hdrNorm = hdrRaw.map(normHeader_);
-
-  function col(candidates, label) {
-    for (let ci = 0; ci < candidates.length; ci++) {
-      const want = normHeader_(candidates[ci]);
-      const exact = hdrNorm.indexOf(want);
-      if (exact >= 0) return exact;
-    }
-    // nothing exact — accept a header that contains the name, or is contained by it
-    for (let ci = 0; ci < candidates.length; ci++) {
-      const want = normHeader_(candidates[ci]);
-      for (let hi = 0; hi < hdrNorm.length; hi++) {
-        if (!hdrNorm[hi]) continue;
-        if (hdrNorm[hi].indexOf(want) >= 0 || want.indexOf(hdrNorm[hi]) >= 0) return hi;
-      }
-    }
-    throw new Error('The extract has no ' + label + ' column. It needs one named something ' +
-      'like "' + candidates[0] + '". Columns found: ' + hdrRaw.join(' | '));
-  }
-
-  const cCountry = col(['Country Code', 'Country'], 'country'),
-        cBrand   = col(['Brand'], 'brand'),
-        cTreat   = col(['Treatment Type', 'Treatment'], 'treatment type'),
-        cMonth   = col(['Dispatched Date: Month', 'Dispatched Month', 'Month'], 'month'),
-        cCount   = col(['Count', 'Shipments', 'Orders'], 'shipment count'),
-        cCost    = col(['Sum of Cost Of Shipping', 'Cost Of Shipping', 'Total Cost', 'Cost'],
-                       'shipping cost');
-
-  Logger.log('  columns matched:');
-  [['country', cCountry], ['brand', cBrand], ['treatment', cTreat],
-   ['month', cMonth], ['count', cCount], ['cost', cCost]].forEach(function (x) {
-    Logger.log('    ' + pad_(x[0], 10) + ' -> "' + hdrRaw[x[1]] + '"');
-  });
+  // Columns are found by name, so a reordered extract still works — see
+  // extractColumns_ for why the match is deliberately forgiving.
+  const X = extractStandardColumns_(rows[0]);
+  const cCountry = X.cCountry, cBrand = X.cBrand, cTreat = X.cTreat,
+        cMonth = X.cMonth, cCount = X.cCount, cCost = X.cCost;
+  logExtractColumns_(X.cols);
 
   const wl = wlTreatments_();
 
@@ -1118,21 +1282,52 @@ function importActualsFromStaging(commit) {
   const agg = {}, unmatched = {}, outside = {}, defaulted = {};
   let read = 0, skipped = 0;
 
+  /* Why each skipped row was skipped, not just how many there were.
+     "412 rows skipped as blank" is the same message whether the extract had 412
+     genuinely empty trailing rows or 412 rows whose month failed to parse, and
+     those are an ignorable non-event and a silently halved forecast
+     respectively. Counted by reason, with the first few row numbers of each, so
+     the difference is visible without opening the tab. */
+  const skips = {};
+  function skip(reason, rowIndex) {
+    skipped++;
+    const s = skips[reason] || (skips[reason] = { reason: reason, rows: 0, examples: [] });
+    s.rows++;
+    if (s.examples.length < 5) s.examples.push(rowIndex + 1);   // 1-based, as the sheet shows it
+  }
+
+  /* Rows carrying shipments but no money. Same symptom as a mis-bucketed
+     treatment — a blended rate far under forecast with a shipment count that is
+     perfectly correct — and a completely different cause, so it is reported
+     separately rather than folded into the totals. The parse cannot distinguish
+     a genuine zero from a cost that was never exported, so this reports the
+     shape of the problem and leaves the judgement to a person. */
+  const zeroCost = {};
+
   for (let i = 1; i < rows.length; i++) {
     const r = rows[i];
     const brand = normKey(r[cBrand]), geo = normKey(r[cCountry]);
-    if (!brand || !geo) { skipped++; continue; }
+    if (!brand || !geo) { skip('no brand or country', i); continue; }
 
     const treatRaw = safeStr(r[cTreat]);
     const treatKey = treatRaw.toUpperCase().replace(/[^A-Z0-9]/g, '');
     const treat = wl[treatKey] ? 'WL' : 'CORE_RX';
     const ms = parseExtractMonth_(r[cMonth]);
-    if (!ms) { skipped++; continue; }
+    if (!ms) { skip('month could not be read', i); continue; }
 
     const n = parseExtractNumber_(r[cCount]);
     const cost = parseExtractNumber_(r[cCost]);
-    if (!n) { skipped++; continue; }
+    if (!n) { skip('no shipment count', i); continue; }
     read++;
+
+    if (cost === 0) {
+      const zk = brand + '|' + geo + '|' + treat + '|' + dateKey(ms);
+      const z = zeroCost[zk] ||
+                (zeroCost[zk] = { brand: brand, geo: geo, treat: treat,
+                                  month: fmtDate(ms), rows: 0, ship: 0, examples: [] });
+      z.rows++; z.ship += n;
+      if (z.examples.length < 3) z.examples.push(i + 1);
+    }
 
     /* Core Rx is a DEFAULT, not a decision: every treatment string that is not
        in ACTUALS_WL_TREATMENTS lands here, whether or not anyone has ever looked
@@ -1170,8 +1365,21 @@ function importActualsFromStaging(commit) {
     a.ship += n; a.cost += cost;
   }
 
-  Logger.log('  extract rows read      : ' + read + (skipped ? '  (' + skipped + ' skipped as blank)' : ''));
+  Logger.log('  extract rows read      : ' + read + (skipped ? '  (' + skipped + ' skipped)' : ''));
   Logger.log('  segment-months to load : ' + Object.keys(agg).length);
+
+  const skipList = Object.keys(skips).map(function (k) { return skips[k]; });
+  skipList.sort(function (a, b) { return b.rows - a.rows; });
+  if (skipList.length) {
+    Logger.log('');
+    Logger.log('--- ' + skipped + ' row(s) skipped ---');
+    skipList.forEach(function (s) {
+      Logger.log('  ' + pad_(String(s.rows), 6) + '  ' + pad_(s.reason, 24) +
+                 '  e.g. sheet row ' + s.examples.join(', '));
+    });
+    Logger.log('  Trailing blank rows are normal. A month that could not be read is not:');
+    Logger.log('  those shipments are missing from the comparison entirely.');
+  }
 
   // ---- what would be written ---------------------------------------------
   const toWrite = [];
@@ -1234,6 +1442,30 @@ function importActualsFromStaging(commit) {
     Logger.log('  Add a High Level ID for these if they should be forecast.');
   }
 
+  // ---- shipments that arrived with no money -------------------------------
+  const zcList = Object.keys(zeroCost).map(function (k) { return zeroCost[k]; });
+  zcList.sort(function (a, b) { return b.ship - a.ship; });
+  let zcRows = 0, zcShip = 0;
+  zcList.forEach(function (z) { zcRows += z.rows; zcShip += z.ship; });
+  if (zcList.length) {
+    Logger.log('');
+    Logger.log('--- ' + zcRows + ' row(s) carried shipments but a cost of 0: ' +
+               Math.round(zcShip).toLocaleString() + ' shipments ---');
+    Logger.log('  These still count towards the blended rate, as a divisor with nothing');
+    Logger.log('  on top, so they pull the measured rate down. A genuine zero and a cost');
+    Logger.log('  that never made it into the export look identical here.');
+    Logger.log('  ' + pad_('rows', 6) + '  ' + pad_('shipments', 12) + '  segment-month');
+    zcList.slice(0, 20).forEach(function (z) {
+      Logger.log('  ' + pad_(String(z.rows), 6) + '  ' +
+                 pad_(Math.round(z.ship).toLocaleString(), 12) + '  ' +
+                 z.brand + ' ' + z.geo + ' ' + z.treat.replace('_', ' ') + ' ' + z.month +
+                 '   e.g. sheet row ' + z.examples.join(', '));
+    });
+    if (zcList.length > 20) {
+      Logger.log('  ... and ' + (zcList.length - 20) + ' more segment-month(s).');
+    }
+  }
+
   if (Object.keys(outside).length) {
     let n = 0;
     Object.keys(outside).forEach(function (k) { n += outside[k].ship; });
@@ -1242,13 +1474,50 @@ function importActualsFromStaging(commit) {
                Math.round(n).toLocaleString() + ' shipments, ignored ---');
   }
 
+  /* One report shape for both outcomes, so a caller rendering it does not have
+     to know whether it previewed or committed — only `written` differs. The
+     lists are capped where a screen could not show more anyway; the log above is
+     the complete record. */
+  const outsideList = Object.keys(outside).sort().map(function (k) {
+    return { month: k, ship: outside[k].ship };
+  });
+  const unmatchedList = Object.keys(unmatched).sort().map(function (k) {
+    const p = k.split('|');
+    return { brand: p[0], geo: p[1], treat: p[2].replace('_', ' '),
+             ship: unmatched[k].ship, cost: unmatched[k].cost };
+  });
+  const report = {
+    ok: true,
+    preview: !commit,
+    rowsRead: read,
+    rowsSkipped: skipped,
+    skipReasons: skipList.map(function (s) {
+      return { reason: s.reason, rows: s.rows, examples: s.examples };
+    }),
+    segmentMonths: Object.keys(agg).length,
+    rows: toWrite.length,
+    unmatched: unmatchedList.length,
+    unmatchedSegments: unmatchedList.slice(0, 50),
+    defaultedValues: dfList.length,
+    defaultedRows: dfRows,
+    defaultedCost: dfCost,
+    defaultedTreatments: dfList.slice(0, 50).map(function (d) {
+      return { treatment: d.raw === '' ? '(blank)' : d.raw,
+               rows: d.rows, ship: d.ship, cost: d.cost };
+    }),
+    zeroCostRows: zcRows,
+    zeroCostShipments: zcShip,
+    zeroCost: zcList.slice(0, 50).map(function (z) {
+      return { brand: z.brand, geo: z.geo, treat: z.treat.replace('_', ' '),
+               month: z.month, rows: z.rows, ship: z.ship };
+    }),
+    outsideHorizon: outsideList
+  };
+
   if (!commit) {
     Logger.log('');
     Logger.log('  Nothing written. Run importActualsFromStaging(true) to load them.');
-    return { ok: true, preview: true, rows: toWrite.length,
-             unmatched: Object.keys(unmatched).length,
-             defaultedValues: dfList.length, defaultedRows: dfRows,
-             defaultedCost: dfCost };
+    return report;
   }
 
   // ---- write --------------------------------------------------------------
@@ -1267,15 +1536,253 @@ function importActualsFromStaging(commit) {
   }
   Logger.log('');
   Logger.log('  Open the Actuals tab in the portal to see them against the forecast.');
-  return { ok: true, preview: false, written: res.written, skipped: res.skipped,
-           defaultedValues: dfList.length, defaultedRows: dfRows,
-           defaultedCost: dfCost };
+
+  report.written = res.written;
+  report.writeSkipped = res.skipped;
+  /* Whatever importActuals could not write, verbatim. Almost always a scope
+     refusal — the import touches every segment, and saveActual still checks each
+     one against Scope_Mapping — and a row refused for that reason is missing
+     from the comparison with nothing on screen to say so. */
+  report.writeErrors = res.errors.slice(0, 10);
+  return report;
 }
 
 
 /** Convenience wrappers, so both appear in the editor's function list. */
 function previewActualsImport() { return importActualsFromStaging(false); }
 function runActualsImport()     { return importActualsFromStaging(true); }
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UPLOADING THE EXTRACT FROM THE PORTAL
+//
+// The same import, reached from a file picker instead of a paste into the
+// staging tab followed by a run from the Apps Script editor. What it replaces is
+// four manual steps with three places to go wrong: open the workbook, paste into
+// the right tab, open the editor, run the right function — and then read a log
+// that nothing forces you to read.
+//
+// There is no preview step here, by request, so the report is the only thing
+// standing between a bad file and a wrong forecast. That is why the report is
+// returned as data rather than only logged: the manual route has caught real
+// problems (a treatment type quietly defaulting to Core Rx, a cost column that
+// did not parse) and it caught them because a person happened to read the log.
+// A screen that says nothing is worse than a log nobody opens, because it looks
+// like a clean run.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The largest file this will accept.
+ *
+ * Not a performance limit — the staging write is one setValues call regardless.
+ * It is a limit on how much can cross google.script.run in one argument and how
+ * many rows importActuals can get through inside the 6-minute ceiling, since
+ * that part is one saveActual per segment-month. A monthly extract is a few
+ * thousand rows; something an order of magnitude past that is a wrong file, and
+ * failing on it with a sentence is better than timing out half-written.
+ */
+const ACTUALS_UPLOAD_MAX_ROWS = 20000;
+
+/**
+ * Load a CSV of the monthly extract, then run the import.
+ *
+ * Two modes, and the difference is only what happens to Actuals_Import first:
+ *
+ *   APPEND  — add this file's months to what is already staged, having first
+ *             removed any rows already staged for the months the file covers.
+ *   REPLACE — empty the staging tab and stage only this file.
+ *
+ * APPEND does not simply append, and it must not. The aggregation sums every
+ * staged row for a segment-month, so a month uploaded twice would produce a
+ * segment-month with double the shipments and double the spend. The blended rate
+ * would survive that untouched — it is cost over shipments, and both doubled —
+ * so the error would not show up as a wrong rate on any screen. It would show up
+ * as a volume-weighted comparison quietly weighting that month twice as heavily
+ * as it should, which is the kind of thing nobody finds for a quarter. So months
+ * present in the file are cleared from the staging tab before the file is
+ * staged, and the report names them.
+ *
+ * @param {string} csvText  the file's raw text
+ * @param {string} mode     'APPEND' or 'REPLACE'
+ */
+function uploadActualsCsv(csvText, mode) {
+  prewarmForWrite_([SHEET.ACTUALS_IMPORT, SHEET.ACTUALS, SHEET.ACTUALS_AMENDS,
+                    SHEET.HIGH_LEVEL_IDS, SHEET.DIM_CALENDAR]);
+  const perms = requirePermissions_();
+  requireImportActuals_(perms);
+
+  const upMode = normKey(mode);
+  if (upMode !== 'APPEND' && upMode !== 'REPLACE') {
+    throw new Error('Unknown upload mode "' + safeStr(mode) + '". Expected APPEND or REPLACE.');
+  }
+
+  // ---- the file -----------------------------------------------------------
+  const csv = parseCsv_(csvText);
+  if (!csv.length) {
+    throw new Error('That file is empty. It needs a header row and at least one row of data.');
+  }
+  if (csv.length < 2) {
+    throw new Error('That file has a header row but no data. Columns found: ' +
+                    csv[0].map(function (h) { return safeStr(h); }).join(' | '));
+  }
+  if (csv.length - 1 > ACTUALS_UPLOAD_MAX_ROWS) {
+    throw new Error('That file has ' + (csv.length - 1).toLocaleString() + ' rows, and the ' +
+      'limit is ' + ACTUALS_UPLOAD_MAX_ROWS.toLocaleString() + '. A monthly extract is ' +
+      'normally a few thousand — check this is the right file, or split it by month.');
+  }
+
+  /* Header check before anything is written. extractStandardColumns_ throws with
+     the columns it did find, which is the only useful thing to say to someone
+     holding the wrong export. */
+  const src = extractStandardColumns_(csv[0]);
+
+  // ---- map the file's columns onto the staging tab's own columns -----------
+  /* The tab's header row is fixed by TABLES.ACTUALS_IMPORT and the importer
+     matches on it, so rows are written in the TAB's order, not the file's. A
+     file with its columns rearranged, or carrying extra columns the model does
+     not use, therefore stages correctly rather than landing a month in the count
+     column.
+     Both sides are located through extractColumns_ rather than by literal header
+     text, so neither the tab's position order nor the pound sign in its cost
+     header is written down twice — the one place that spelling exists is TABLES. */
+  const t = TABLES.ACTUALS_IMPORT;
+  const tab = extractStandardColumns_(t.headers);
+  const map = new Array(t.headers.length).fill(-1);
+  map[tab.cCountry] = src.cCountry;
+  map[tab.cBrand]   = src.cBrand;
+  map[tab.cTreat]   = src.cTreat;
+  map[tab.cMonth]   = src.cMonth;
+  map[tab.cCount]   = src.cCount;
+  map[tab.cCost]    = src.cCost;
+  /* Carrier and method are aggregated away by the import, so a file without them
+     stages fine — the columns are just left blank and reported as absent. */
+  if (tab.cCarrier >= 0) map[tab.cCarrier] = src.cCarrier;
+  if (tab.cMethod  >= 0) map[tab.cMethod]  = src.cMethod;
+  const numericCols = {};
+  numericCols[tab.cCount] = true;
+  numericCols[tab.cCost]  = true;
+
+  const missingOptional = t.headers.filter(function (h, i) { return map[i] < 0; });
+
+  // ---- the months this file covers ---------------------------------------
+  const monthKeys = {}, unreadableMonths = [];
+  for (let i = 1; i < csv.length; i++) {
+    const raw = safeStr(csv[i][src.cMonth]);
+    if (!raw) continue;
+    const ms = parseExtractMonth_(raw);
+    if (ms) monthKeys[dateKey(ms)] = fmtDate(ms);
+    else if (unreadableMonths.length < 5 && unreadableMonths.indexOf(raw) < 0) {
+      unreadableMonths.push(raw);
+    }
+  }
+  if (!Object.keys(monthKeys).length) {
+    throw new Error('No month in that file could be read. The "' +
+      safeStr(csv[0][src.cMonth]) + '" column needs values like "January, 2026". ' +
+      'Found instead: ' + (unreadableMonths.join(', ') || '(all blank)'));
+  }
+
+  // ---- build the staging rows --------------------------------------------
+  const width = t.headers.length;
+  const staged = [];
+  for (let i = 1; i < csv.length; i++) {
+    const r = csv[i];
+    const row = new Array(width).fill('');
+    for (let c = 0; c < width; c++) {
+      if (map[c] < 0) continue;
+      const raw = safeStr(r[map[c]]);
+      /* Count and cost go in as numbers so the tab is usable by eye and so a
+         thousands separator cannot survive to be re-parsed. A blank stays blank
+         rather than becoming 0: the difference between "this cost nothing" and
+         "no cost was exported" is exactly what the zero-cost report is for, and
+         writing 0 here would destroy it before the report ever ran. */
+      if (numericCols[c]) row[c] = (raw === '' ? '' : parseExtractNumber_(raw));
+      else                row[c] = raw;
+    }
+    staged.push(row);
+  }
+
+  // ---- stage it -----------------------------------------------------------
+  const result = withLock_(function () {
+    const sh = getSheet_(t.sheet);
+    invalidateSheetCache_(t.sheet);
+
+    let removedRows = 0, replacedMonths = [], kept = [];
+
+    if (upMode === 'REPLACE') {
+      removedRows = clearActualsImport_();
+    } else {
+      /* Read what is staged, keep the months this file does not cover, and
+         rewrite the tab as kept-then-new. One clear and one setValues, rather
+         than deleting rows one at a time — and it cannot leave the tab
+         half-cleared if something throws between the two, because the rows to
+         keep are already in memory before anything is removed. */
+      const existing = getAllData_(t.sheet);
+      if (existing.length > 1) {
+        const ex = extractColumns_(existing[0]);
+        const exMonth = ex.find(['Dispatched Date: Month', 'Dispatched Month', 'Month'], null);
+        const hit = {};
+        for (let i = 1; i < existing.length; i++) {
+          const row = existing[i];
+          if (!row.some(function (c) { return safeStr(c) !== ''; })) continue;   // blank
+          const ms = exMonth >= 0 ? parseExtractMonth_(row[exMonth]) : null;
+          const k = ms ? dateKey(ms) : '';
+          if (k && monthKeys[k]) { hit[k] = (hit[k] || 0) + 1; removedRows++; continue; }
+          kept.push(row.slice(0, width));
+        }
+        replacedMonths = Object.keys(hit).sort().map(function (k) {
+          return { month: monthKeys[k], rowsRemoved: hit[k] };
+        });
+      }
+      clearDataRows_(t.sheet);
+    }
+
+    const all = kept.concat(staged);
+    if (all.length) {
+      sh.getRange(2, 1, all.length, width)
+        .setValues(all.map(function (row) {
+          const out = row.slice(0, width);
+          while (out.length < width) out.push('');
+          return out;
+        }));
+    }
+    invalidateSheetCache_(t.sheet);
+
+    return { removedRows: removedRows, replacedMonths: replacedMonths,
+             stagedRows: staged.length, totalStaged: all.length };
+  });
+
+  logAudit_('IMPORT', SHEET.ACTUALS_IMPORT, '', 'mode', upMode,
+            result.stagedRows + ' rows staged, ' + result.removedRows + ' removed',
+            'uploadActualsCsv ' + upMode + ' — months ' +
+            Object.keys(monthKeys).sort().map(function (k) { return monthKeys[k]; }).join(', '),
+            true);
+
+  // ---- and run the same import the editor runs ---------------------------
+  Logger.log('=== ACTUALS CSV UPLOAD (' + upMode + ') ===');
+  Logger.log('  staged  : ' + result.stagedRows + ' row(s) from the file');
+  Logger.log('  removed : ' + result.removedRows + ' row(s) already staged for those months');
+  Logger.log('  months  : ' + Object.keys(monthKeys).sort().map(function (k) {
+    return monthKeys[k];
+  }).join(', '));
+
+  const report = importActualsFromStagingCore_(true);
+
+  report.mode = upMode;
+  report.fileRows = csv.length - 1;
+  report.stagedRows = result.stagedRows;
+  report.stagingRowsRemoved = result.removedRows;
+  report.totalStaged = result.totalStaged;
+  report.replacedMonths = result.replacedMonths;
+  report.monthsInFile = Object.keys(monthKeys).sort().map(function (k) { return monthKeys[k]; });
+  report.unreadableMonths = unreadableMonths;
+  /* Which columns were matched loosely, so a report that looks wrong can be
+     traced to the header that was guessed rather than to the data. */
+  report.columnsMatched = src.cols.matched().map(function (m) {
+    return { label: m[0], header: m[3], mode: m[2] };
+  });
+  report.columnsMissing = missingOptional;
+  return report;
+}
 
 
 // ─────────────────────────────────────────────────────────────────────────────

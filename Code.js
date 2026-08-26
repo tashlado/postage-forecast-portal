@@ -400,8 +400,17 @@ function loadOutputForClient_(visibleHl) {
   for (let i = 1; i < data.length; i++) {
     const hl = safeInt(data[i][C.High_Level_ID]);
     if (!hl || !visibleHl[hl]) continue;
+    /* Brand, Geo, Treatment_Type and WL_Split are sent as OUTPUT itself holds
+       them, not looked up from High_Level_IDs on the client. OUTPUT is a snapshot
+       taken at publish time, so if a segment has been renamed since, these are
+       what the published forecast actually said — which is what the Output screen
+       claims to show. Costs nothing extra to read: the whole row is already here. */
     out.push({ hlId: hl, dateId: safeInt(data[i][C.Date_ID]),
                monthStart: fmtDate(data[i][C.Month_Start]),
+               brand: safeStr(data[i][C.Brand]),
+               geo: safeStr(data[i][C.Geo]),
+               treatmentType: safeStr(data[i][C.Treatment_Type]),
+               wlSplit: safeStr(data[i][C.WL_Split]),
                currency: safeStr(data[i][C.Currency]),
                rate: safeNum(data[i][C.Forecast_Rate_Per_Order]),
                scenarioId: safeInt(data[i][C.Scenario_ID]),
