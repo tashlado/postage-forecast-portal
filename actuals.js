@@ -951,6 +951,283 @@ function diagnoseActualsSegments() {
 }
 
 
+/**
+ * Every extract row that brought shipments but no money, grouped by treatment.
+ *
+ * Reads only. diagnoseActualsTreatments answers "did this row go to the right
+ * segment"; this answers the other half, "did its cost survive the trip", and
+ * they are separate questions with the same symptom. A segment whose weight-loss
+ * rows were filed as Core Rx and a segment whose cost cells were empty both show
+ * up on the Actuals tab as a blended rate far under forecast, with a shipment
+ * count that looks perfectly correct — because in both cases the count IS
+ * correct. Only the money went missing, and it went missing in different places
+ * for different reasons owned by different people.
+ *
+ * The old parse turned an empty cell, an "N/A", a stray currency symbol and a
+ * genuine zero into the same number, so the import had no way to tell a row that
+ * cost nothing from a row whose cost was never exported. parseExtractNumberEx_
+ * now keeps the reason, and this prints it: per treatment type, then per brand,
+ * country and month for the ones carrying volume.
+ *
+ * It also checks the thing the bug report asks about directly — whether the raw
+ * treatment strings meant to be weight loss actually normalise to something in
+ * ACTUALS_WL_TREATMENTS — and lists NEAR MISSES: values that contain, or are
+ * contained by, a configured one without matching it. A near miss is not a guess
+ * about clinical meaning; it is a config string and an extract string that differ
+ * by characters, which is checkable. Values with no relation to the config are
+ * left alone, because nothing in the sheet records which conditions are weight
+ * loss and a guess printed in a log reads as a finding.
+ *
+ * @param {string=} treatmentFilter  optional: drill into one treatment type
+ */
+function diagnoseActualsCost(treatmentFilter) {
+  requireMaintenance_();
+  Logger.log('=== ACTUALS IMPORT — MISSING COST (read-only) ===');
+
+  prewarmSheetCache_([SHEET.ACTUALS_IMPORT, SHEET.HIGH_LEVEL_IDS, SHEET.CONFIG]);
+
+  const rows = getAllData_(SHEET.ACTUALS_IMPORT);
+  if (rows.length < 2) {
+    Logger.log('  The Actuals_Import tab is empty — paste the extract there first.');
+    return { ok: false, reason: 'empty' };
+  }
+
+  // ---- columns, and how each one was found --------------------------------
+  const hdrRaw  = rows[0].map(function (h) { return safeStr(h); });
+  const hdrNorm = hdrRaw.map(normHeader_);
+  const colHow  = {};
+  function col(candidates, label) {
+    for (let ci = 0; ci < candidates.length; ci++) {
+      const exact = hdrNorm.indexOf(normHeader_(candidates[ci]));
+      if (exact >= 0) {
+        colHow[label] = { index: exact, mode: 'exact', candidate: candidates[ci] };
+        return exact;
+      }
+    }
+    for (let ci = 0; ci < candidates.length; ci++) {
+      const want = normHeader_(candidates[ci]);
+      for (let hi = 0; hi < hdrNorm.length; hi++) {
+        if (!hdrNorm[hi]) continue;
+        if (hdrNorm[hi].indexOf(want) >= 0 || want.indexOf(hdrNorm[hi]) >= 0) {
+          colHow[label] = { index: hi, mode: 'fuzzy', candidate: candidates[ci] };
+          return hi;
+        }
+      }
+    }
+    throw new Error('The extract has no ' + label + ' column. Columns found: ' +
+                    hdrRaw.join(' | '));
+  }
+  const cCountry = col(['Country Code', 'Country'], 'country'),
+        cBrand   = col(['Brand'], 'brand'),
+        cTreat   = col(['Treatment Type', 'Treatment'], 'treatment'),
+        cMonth   = col(['Dispatched Date: Month', 'Dispatched Month', 'Month'], 'month'),
+        cCount   = col(['Count', 'Shipments', 'Orders'], 'count'),
+        cCost    = col(['Sum of Cost Of Shipping', 'Cost Of Shipping', 'Total Cost', 'Cost'],
+                       'cost');
+
+  Logger.log('  extract headers (' + hdrRaw.length + '): ' + hdrRaw.join(' | '));
+  Logger.log('');
+  Logger.log('  columns matched:');
+  ['country', 'brand', 'treatment', 'month', 'count', 'cost'].forEach(function (label) {
+    const m = colHow[label];
+    Logger.log('    ' + pad_(label, 10) + '  ' + pad_(colLetter_(m.index), 4) + '  ' +
+               pad_(m.mode, 6) + '  "' + hdrRaw[m.index] + '"');
+  });
+  if (colHow.cost.mode !== 'exact' || colHow.count.mode !== 'exact') {
+    Logger.log('');
+    Logger.log('  ** At least one of count/cost was matched by substring, not by name.');
+    Logger.log('     Confirm the columns above are the right ones before reading on. **');
+  }
+
+  // ---- config, and what a weight-loss value has to look like --------------
+  const rawCfg = configStr('ACTUALS_WL_TREATMENTS', 'WeightLossGlp1');
+  const wl = wlTreatments_();
+  const wlKeys = Object.keys(wl).sort();
+  Logger.log('');
+  Logger.log('  Config ACTUALS_WL_TREATMENTS : ' + rawCfg);
+  Logger.log('  normalises to                : ' + (wlKeys.join(', ') || '(nothing)'));
+
+  const filter = safeStr(treatmentFilter).toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (filter) Logger.log('  filtered to treatment        : ' + filter);
+
+  // ---- walk the extract ---------------------------------------------------
+  const byTreat = {};
+  let usable = 0, withCost = 0, missing = 0, trueZero = 0, suspect = 0;
+  let missingShip = 0, totalShip = 0, totalCost = 0;
+
+  for (let i = 1; i < rows.length; i++) {
+    const r = rows[i];
+    const brand = normKey(r[cBrand]), geo = normKey(r[cCountry]);
+    if (!brand || !geo) continue;
+    const n = parseExtractNumber_(r[cCount]);
+    if (!n) continue;                       // the importer skips these too
+    usable++;
+
+    const treatRaw = safeStr(r[cTreat]);
+    const treatKey = treatRaw.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (filter && treatKey !== filter) continue;
+
+    const ex = parseExtractNumberEx_(r[cCost]);
+    totalShip += n; totalCost += ex.value;
+
+    const e = byTreat[treatKey] ||
+              (byTreat[treatKey] = { key: treatKey, raw: treatRaw,
+                                     bucket: wl[treatKey] ? 'WL' : 'CORE_RX',
+                                     rows: 0, ship: 0, cost: 0,
+                                     badRows: 0, badShip: 0,
+                                     status: {}, where: {}, samples: [] });
+    e.rows++; e.ship += n; e.cost += ex.value;
+    e.status[ex.status] = (e.status[ex.status] || 0) + 1;
+
+    const odd = ex.status === 'PARENS_POSITIVE' || ex.status === 'AMBIGUOUS_DECIMAL';
+    if (!ex.ok || ex.value === 0 || odd) {
+      e.badRows++; e.badShip += n;
+      /* Kept per brand, country and month, because the fix differs: one month
+         missing across every brand is an export that was compiled wrong; one
+         brand missing across every month is a feed that never carried cost. */
+      const ms = parseExtractMonth_(r[cMonth]);
+      const wk = brand + ' ' + geo + '  ' + (ms ? fmtDate(ms) : '(unparsed month)');
+      const w = e.where[wk] || (e.where[wk] = { rows: 0, ship: 0 });
+      w.rows++; w.ship += n;
+      if (e.samples.length < 4) {
+        e.samples.push('row ' + (i + 1) + ' col ' + colLetter_(cCost) +
+                       ' = "' + ex.raw + '"  [' + ex.status + ']');
+      }
+      if (ex.ok && !odd) { trueZero++; }
+      else if (odd)      { suspect++; }
+      else               { missing++; missingShip += n; }
+    } else {
+      withCost++;
+    }
+  }
+
+  const list = Object.keys(byTreat).map(function (k) { return byTreat[k]; });
+  list.sort(function (a, b) { return b.badShip - a.badShip; });
+
+  // ---- headline -----------------------------------------------------------
+  Logger.log('');
+  Logger.log('--- headline ---');
+  Logger.log('  usable rows (count > 0)      : ' + usable);
+  Logger.log('  with a real cost             : ' + withCost);
+  Logger.log('  cost FAILED to parse         : ' + missing + '   (' +
+             Math.round(missingShip).toLocaleString() + ' shipments)');
+  Logger.log('  cost parsed to a genuine 0   : ' + trueZero);
+  Logger.log('  cost parsed but looks wrong  : ' + suspect +
+             '   (bracketed negatives / mixed decimal separators)');
+  Logger.log('  total shipments seen         : ' + Math.round(totalShip).toLocaleString());
+  Logger.log('  total cost seen              : £' + totalCost.toFixed(2));
+  Logger.log('  implied blended rate         : £' +
+             (totalShip ? (totalCost / totalShip).toFixed(4) : '0.0000') + ' per shipment');
+
+  // ---- per treatment type -------------------------------------------------
+  Logger.log('');
+  Logger.log('--- shipments with no usable cost, by treatment type ---');
+  Logger.log('  ' + pad_('bucket', 8) + '  ' + pad_('bad', 6) + '/' + pad_('rows', 6) + '  ' +
+             pad_('bad ships', 12) + '  ' + pad_('£/ship', 9) + '  treatment type');
+  let anyBad = false;
+  list.forEach(function (e) {
+    if (!e.badRows) return;
+    anyBad = true;
+    Logger.log('  ' + pad_(e.bucket, 8) + '  ' + pad_(String(e.badRows), 6) + '/' +
+               pad_(String(e.rows), 6) + '  ' +
+               pad_(Math.round(e.badShip).toLocaleString(), 12) + '  ' +
+               pad_('£' + (e.ship ? (e.cost / e.ship).toFixed(4) : '0.0000'), 9) + '  ' +
+               (e.raw === '' ? '(blank)' : e.raw));
+    Logger.log('  ' + pad_('', 8) + '  reasons: ' +
+               Object.keys(e.status).sort().map(function (s) {
+                 return s + ' x' + e.status[s];
+               }).join(', '));
+    e.samples.forEach(function (s) { Logger.log('  ' + pad_('', 8) + '  ' + s); });
+  });
+  if (!anyBad) Logger.log('  None. Every row with shipments also carried a cost.');
+
+  // ---- the weight-loss cut, called out on its own -------------------------
+  const wlAll = list.filter(function (e) { return e.bucket === 'WL'; });
+  const wlBad = wlAll.filter(function (e) { return e.badRows; });
+  Logger.log('');
+  Logger.log('--- the weight-loss segment specifically ---');
+  if (!wlAll.length) {
+    Logger.log('  NOTHING in this extract classifies as weight loss.');
+    Logger.log('  Every row went to Core Rx. If weight-loss volume is expected here, the');
+    Logger.log('  cost is not the first problem — the classification is. See the near');
+    Logger.log('  misses below and diagnoseActualsTreatments().');
+  } else {
+    let ws = 0, wc = 0, wb = 0;
+    wlAll.forEach(function (e) { ws += e.ship; wc += e.cost; wb += e.badShip; });
+    Logger.log('  values classified WL   : ' +
+               wlAll.map(function (e) { return e.raw; }).join(', '));
+    Logger.log('  shipments              : ' + Math.round(ws).toLocaleString());
+    Logger.log('  cost                   : £' + wc.toFixed(2));
+    Logger.log('  blended rate           : £' + (ws ? (wc / ws).toFixed(4) : '0.0000'));
+    Logger.log('  shipments with no cost : ' + Math.round(wb).toLocaleString() +
+               (ws ? '  (' + ((wb / ws) * 100).toFixed(1) + '% of WL volume)' : ''));
+    if (wb && ws && wb / ws > 0.2) {
+      Logger.log('  ** More than a fifth of weight-loss volume carries no cost. The');
+      Logger.log('     blended rate above is understated by roughly that proportion. **');
+    }
+  }
+
+  // ---- where the missing cost sits ----------------------------------------
+  const drill = wlBad.length ? wlBad : list.filter(function (e) { return e.badRows; }).slice(0, 3);
+  if (drill.length) {
+    Logger.log('');
+    Logger.log('--- where those rows sit, by brand, country and month ---');
+    drill.forEach(function (e) {
+      Logger.log('  ' + (e.raw === '' ? '(blank)' : e.raw) + '  [' + e.bucket + ']');
+      Object.keys(e.where).sort().forEach(function (k) {
+        const w = e.where[k];
+        Logger.log('      ' + pad_(k, 34) + '  ' + pad_(String(w.rows), 5) + ' row(s), ' +
+                   pad_(Math.round(w.ship).toLocaleString(), 12) + ' shipments');
+      });
+    });
+    Logger.log('  One month bad across every brand is an export compiled without cost.');
+    Logger.log('  One brand bad across every month is a feed that never carried it.');
+  }
+
+  // ---- does anything ALMOST match the config? -----------------------------
+  Logger.log('');
+  Logger.log('--- treatment values against ACTUALS_WL_TREATMENTS ---');
+  const nearMiss = [];
+  list.forEach(function (e) {
+    if (e.bucket === 'WL' || !e.key) return;
+    for (let i = 0; i < wlKeys.length; i++) {
+      const w = wlKeys[i];
+      if (e.key.indexOf(w) >= 0 || w.indexOf(e.key) >= 0) {
+        nearMiss.push({ e: e, cfg: w });
+        break;
+      }
+    }
+  });
+  if (!wlKeys.length) {
+    Logger.log('  ACTUALS_WL_TREATMENTS is empty, so nothing can ever classify as WL.');
+  } else if (!nearMiss.length) {
+    Logger.log('  No Core Rx value is a near miss for a configured weight-loss value.');
+    Logger.log('  So the ones that defaulted to Core Rx did not do so because of a');
+    Logger.log('  spelling or punctuation difference — they simply are not in the');
+    Logger.log('  config. Whether any of them SHOULD be is a clinical question this');
+    Logger.log('  cannot answer; diagnoseActualsTreatments() lists them with their money.');
+  } else {
+    Logger.log('  ** These are in the extract, are NOT matching, and differ from a');
+    Logger.log('     configured value only by characters. Each is a candidate for');
+    Logger.log('     ACTUALS_WL_TREATMENTS — confirm, then add it and re-run the preview. **');
+    nearMiss.forEach(function (nm) {
+      Logger.log('      extract "' + nm.e.raw + '"  ->  ' + nm.e.key);
+      Logger.log('      config                    ' + nm.cfg);
+      Logger.log('      ' + nm.e.rows + ' row(s), ' +
+                 Math.round(nm.e.ship).toLocaleString() + ' shipments, £' +
+                 nm.e.cost.toFixed(2) + ' — currently counted as Core Rx');
+    });
+  }
+
+  Logger.log('');
+  Logger.log('  Nothing was written.');
+  return { usable: usable, withCost: withCost, costMissing: missing,
+           costMissingShipments: missingShip, costTrueZero: trueZero,
+           costSuspect: suspect, treatments: list.length,
+           wlValues: wlAll.length, nearMisses: nearMiss.length };
+}
+
+
 /** Remove every actual, so an import can start clean. */
 function clearActuals() {
   requireMaintenance_();
@@ -1001,6 +1278,22 @@ function normHeader_(s) {
   return safeStr(s).toUpperCase().replace(/[^A-Z0-9]/g, '');
 }
 
+
+/**
+ * A 0-based column index as its spreadsheet letter.
+ *
+ * Local to this file rather than in utils, because only the extract reports
+ * need it: every other read here goes through COL.<TABLE>.<Header> and never
+ * has an index worth naming. Reports are the exception — "cost came from
+ * column A" is checkable against the pasted tab in a way that "index 0" is not.
+ */
+function colLetter_(i) {
+  let n = safeInt(i), s = '';
+  if (n < 0) return '?';
+  do { s = String.fromCharCode(65 + (n % 26)) + s; n = Math.floor(n / 26) - 1; } while (n >= 0);
+  return s;
+}
+
 function wlTreatments_() {
   const raw = configStr('ACTUALS_WL_TREATMENTS', 'WeightLossGlp1');
   const set = {};
@@ -1024,11 +1317,78 @@ function parseExtractMonth_(v) {
   return monthStart(normaliseDate(v));
 }
 
-/** Numbers arrive with thousands separators when pasted from a spreadsheet. */
-function parseExtractNumber_(v) {
-  if (typeof v === 'number') return v;
+/**
+ * A number from the extract, with a reason attached when it is not one.
+ *
+ * The value this returns is exactly what parseExtractNumber_ has always
+ * returned, digit for digit — nothing about the import's arithmetic changes.
+ * What is new is `ok` and `status`, because the old function collapsed four
+ * different things into the number 0 and the caller could not tell them apart:
+ *
+ *   a cell that really says 0        a cost of nothing, correct to sum
+ *   a cell that is empty             no cost was exported for that row
+ *   a cell that says "N/A" or "-"    a cost was withheld, not zero
+ *   a cell that is only a currency   the number was lost in the export
+ *     symbol, or a mangled "Â£"
+ *
+ * Only the first is a row that genuinely cost nothing. The other three are a
+ * row whose cost is missing, and summing them as 0 is how a segment's blended
+ * rate (cost divided by shipments, over the whole segment-month) comes out low
+ * with nothing in the log to say why — the count is right, so the total looks
+ * merely disappointing rather than wrong.
+ *
+ * Two further statuses are report-only. Neither changes the value returned,
+ * because silently re-interpreting figures during a cost investigation is how
+ * you end up debugging the fix instead of the bug:
+ *
+ *   PARENS_POSITIVE     "(12.34)" is accounting notation for MINUS 12.34, but
+ *                       the strip drops the brackets and it sums as PLUS 12.34
+ *                       — an error of twice the value, in the wrong direction.
+ *   AMBIGUOUS_DECIMAL   "1.234,56" is 1234.56 in most of Europe; the strip
+ *                       leaves "1.23456" and it sums as roughly one pound.
+ *
+ * If either appears in a report, the extract needs re-exporting in a consistent
+ * locale — it is not something this function should guess its way through.
+ *
+ * @param {*} v
+ * @return {{value:number, ok:boolean, status:string, raw:string}}
+ */
+function parseExtractNumberEx_(v) {
+  if (typeof v === 'number') {
+    // A NaN can only arrive from a caller, not from a sheet — but one NaN in a
+    // sum makes the whole segment-month NaN, so it is stopped here and named.
+    if (isNaN(v)) return { value: 0, ok: false, status: 'NAN', raw: 'NaN' };
+    return { value: v, ok: true, status: 'NUMBER', raw: String(v) };
+  }
+
+  const raw = safeStr(v);
+  if (raw === '') return { value: 0, ok: false, status: 'BLANK', raw: '' };
+
   // strip separators, currency symbols and any non-ASCII left by a bad decode
-  return safeNum(safeStr(v).replace(/[^0-9.\-]/g, ''));
+  const stripped = raw.replace(/[^0-9.\-]/g, '');
+  if (!/[0-9]/.test(stripped)) {
+    // "N/A", "-", "£", "n/a", "—": something was written in the cell, and none
+    // of it was a number. Distinct from BLANK because somebody chose to put it
+    // there, which is worth knowing when deciding whether to chase the export.
+    return { value: 0, ok: false, status: 'NO_DIGITS', raw: raw };
+  }
+
+  const n = parseFloat(stripped);
+  if (isNaN(n)) return { value: 0, ok: false, status: 'UNPARSEABLE', raw: raw };
+
+  let status = 'PARSED';
+  if (n > 0 && /^\(.*\)$/.test(raw))                    status = 'PARENS_POSITIVE';
+  else if ((stripped.match(/\./g) || []).length > 1)    status = 'AMBIGUOUS_DECIMAL';
+  return { value: n, ok: true, status: status, raw: raw };
+}
+
+
+/**
+ * Numbers arrive with thousands separators when pasted from a spreadsheet.
+ * Kept as the plain-number entry point; parseExtractNumberEx_ carries the why.
+ */
+function parseExtractNumber_(v) {
+  return parseExtractNumberEx_(v).value;
 }
 
 
@@ -1059,36 +1419,104 @@ function importActualsFromStaging(commit) {
   const hdrRaw = rows[0].map(function (h) { return safeStr(h); });
   const hdrNorm = hdrRaw.map(normHeader_);
 
+  /* How each column was found is recorded, not just which one won.
+     The fallback below is a substring test in both directions, and both
+     directions can be wrong in a way that leaves the import looking healthy.
+     The live example is the shipment count: if no header is exactly "Count",
+     the fallback tries candidate COUNT against every header in sheet order,
+     and "Country Code" — column A of this very extract — starts with COUNT.
+     The count would then be read from the country column, and the log would
+     say only that a column was matched. So the mode is kept and printed, an
+     exact match is stated as exact, and a fuzzy one is called out. */
+  const colHow = {};
+
   function col(candidates, label) {
     for (let ci = 0; ci < candidates.length; ci++) {
       const want = normHeader_(candidates[ci]);
       const exact = hdrNorm.indexOf(want);
-      if (exact >= 0) return exact;
+      if (exact >= 0) {
+        colHow[label] = { index: exact, mode: 'exact', candidate: candidates[ci] };
+        return exact;
+      }
     }
     // nothing exact — accept a header that contains the name, or is contained by it
     for (let ci = 0; ci < candidates.length; ci++) {
       const want = normHeader_(candidates[ci]);
       for (let hi = 0; hi < hdrNorm.length; hi++) {
         if (!hdrNorm[hi]) continue;
-        if (hdrNorm[hi].indexOf(want) >= 0 || want.indexOf(hdrNorm[hi]) >= 0) return hi;
+        if (hdrNorm[hi].indexOf(want) >= 0 || want.indexOf(hdrNorm[hi]) >= 0) {
+          colHow[label] = { index: hi, mode: 'fuzzy', candidate: candidates[ci],
+                            how: hdrNorm[hi].indexOf(want) >= 0
+                                 ? 'header contains "' + want + '"'
+                                 : '"' + want + '" contains header' };
+          return hi;
+        }
       }
     }
     throw new Error('The extract has no ' + label + ' column. It needs one named something ' +
       'like "' + candidates[0] + '". Columns found: ' + hdrRaw.join(' | '));
   }
 
-  const cCountry = col(['Country Code', 'Country'], 'country'),
-        cBrand   = col(['Brand'], 'brand'),
-        cTreat   = col(['Treatment Type', 'Treatment'], 'treatment type'),
-        cMonth   = col(['Dispatched Date: Month', 'Dispatched Month', 'Month'], 'month'),
-        cCount   = col(['Count', 'Shipments', 'Orders'], 'shipment count'),
-        cCost    = col(['Sum of Cost Of Shipping', 'Cost Of Shipping', 'Total Cost', 'Cost'],
-                       'shipping cost');
+  /** Every header a candidate list could have taken, so a near-miss is visible. */
+  function rivals_(candidates, chosen) {
+    const out = [];
+    for (let hi = 0; hi < hdrNorm.length; hi++) {
+      if (hi === chosen || !hdrNorm[hi]) continue;
+      for (let ci = 0; ci < candidates.length; ci++) {
+        const want = normHeader_(candidates[ci]);
+        if (hdrNorm[hi].indexOf(want) >= 0 || want.indexOf(hdrNorm[hi]) >= 0) {
+          out.push(hdrRaw[hi]); break;
+        }
+      }
+    }
+    return out;
+  }
 
+  const CAND = {
+    country:   ['Country Code', 'Country'],
+    brand:     ['Brand'],
+    treatment: ['Treatment Type', 'Treatment'],
+    month:     ['Dispatched Date: Month', 'Dispatched Month', 'Month'],
+    count:     ['Count', 'Shipments', 'Orders'],
+    cost:      ['Sum of Cost Of Shipping', 'Cost Of Shipping', 'Total Cost', 'Cost']
+  };
+
+  const cCountry = col(CAND.country,   'country'),
+        cBrand   = col(CAND.brand,     'brand'),
+        cTreat   = col(CAND.treatment, 'treatment'),
+        cMonth   = col(CAND.month,     'month'),
+        cCount   = col(CAND.count,     'count'),
+        cCost    = col(CAND.cost,      'cost');
+
+  Logger.log('  extract headers (' + hdrRaw.length + '): ' + hdrRaw.join(' | '));
+  Logger.log('');
   Logger.log('  columns matched:');
-  [['country', cCountry], ['brand', cBrand], ['treatment', cTreat],
-   ['month', cMonth], ['count', cCount], ['cost', cCost]].forEach(function (x) {
-    Logger.log('    ' + pad_(x[0], 10) + ' -> "' + hdrRaw[x[1]] + '"');
+  Logger.log('    ' + pad_('field', 10) + '  ' + pad_('col', 4) + '  ' +
+             pad_('how', 6) + '  header  /  candidate');
+  ['country', 'brand', 'treatment', 'month', 'count', 'cost'].forEach(function (label) {
+    const m = colHow[label];
+    Logger.log('    ' + pad_(label, 10) + '  ' + pad_(colLetter_(m.index), 4) + '  ' +
+               pad_(m.mode, 6) + '  "' + hdrRaw[m.index] + '"' +
+               (m.mode === 'exact' ? '' : '   <- matched candidate "' + m.candidate +
+                                          '" because ' + m.how));
+  });
+
+  /* Count and cost are the two that carry the arithmetic, so a fuzzy match on
+     either is stated as a warning rather than left in the table to be skimmed. */
+  ['count', 'cost'].forEach(function (label) {
+    const m = colHow[label];
+    if (m.mode !== 'exact') {
+      Logger.log('');
+      Logger.log('  ** WARNING: the ' + label + ' column was NOT matched exactly. **');
+      Logger.log('     It fell through to the substring fallback and took column ' +
+                 colLetter_(m.index) + ', "' + hdrRaw[m.index] + '".');
+      Logger.log('     Check that is really the ' + label + ' before trusting any figure below.');
+    }
+    const also = rivals_(CAND[label], m.index);
+    if (also.length) {
+      Logger.log('     other headers the ' + label + ' candidates could also have taken: ' +
+                 also.map(function (h) { return '"' + h + '"'; }).join(', '));
+    }
   });
 
   const wl = wlTreatments_();
@@ -1118,6 +1546,14 @@ function importActualsFromStaging(commit) {
   const agg = {}, unmatched = {}, outside = {}, defaulted = {};
   let read = 0, skipped = 0;
 
+  /* Cost failures, kept per treatment type, because that is the axis the
+     misclassification bug also runs along and the two are easy to confuse: a
+     weight-loss segment reading low because its rows went to Core Rx, and one
+     reading low because its cost cells were empty, look identical from the
+     Actuals tab. Grouping both reports the same way lets them be told apart. */
+  const costFail = {};
+  let costFailRows = 0, costFailShip = 0, costZeroRows = 0, costZeroShip = 0;
+
   for (let i = 1; i < rows.length; i++) {
     const r = rows[i];
     const brand = normKey(r[cBrand]), geo = normKey(r[cCountry]);
@@ -1130,9 +1566,48 @@ function importActualsFromStaging(commit) {
     if (!ms) { skipped++; continue; }
 
     const n = parseExtractNumber_(r[cCount]);
-    const cost = parseExtractNumber_(r[cCost]);
+    const costEx = parseExtractNumberEx_(r[cCost]);
+    const cost = costEx.value;
     if (!n) { skipped++; continue; }
     read++;
+
+    /* This row has shipments. Whether it also has a cost is now a question with
+       an answer rather than a number that happens to be 0 — see
+       parseExtractNumberEx_. A row that reaches here with no usable cost is
+       counted, kept per treatment type, and reported below with its volume,
+       because it is precisely the row that leaves the count right and the money
+       wrong: the shipments still land in the segment and pull the blended rate
+       (cost / shipments) down towards zero for every other row in that
+       segment-month. A row whose cost genuinely parsed as 0 is tracked
+       separately — same arithmetic, different cause, different owner. */
+    if (!costEx.ok || cost === 0) {
+      const cf = costFail[treatKey] ||
+                 (costFail[treatKey] = { raw: treatRaw, bucket: treat, rows: 0, ship: 0,
+                                         status: {}, samples: [] });
+      cf.rows++; cf.ship += n;
+      cf.status[costEx.status] = (cf.status[costEx.status] || 0) + 1;
+      /* A handful of real cell values, because "BLANK x412" is a category and
+         "row 87 of the pasted tab is empty" is something you can go and look at. */
+      if (cf.samples.length < 3) {
+        cf.samples.push('row ' + (i + 1) + ' col ' + colLetter_(cCost) +
+                        ' = "' + costEx.raw + '"');
+      }
+      if (costEx.ok) { costZeroRows++; costZeroShip += n; }
+      else           { costFailRows++; costFailShip += n; }
+    } else if (costEx.status !== 'PARSED' && costEx.status !== 'NUMBER') {
+      // PARENS_POSITIVE / AMBIGUOUS_DECIMAL: parsed to a number, but probably
+      // the wrong one. Recorded on the same axis so it appears in the report.
+      const cf = costFail[treatKey] ||
+                 (costFail[treatKey] = { raw: treatRaw, bucket: treat, rows: 0, ship: 0,
+                                         status: {}, samples: [] });
+      cf.rows++; cf.ship += n;
+      cf.status[costEx.status] = (cf.status[costEx.status] || 0) + 1;
+      if (cf.samples.length < 3) {
+        cf.samples.push('row ' + (i + 1) + ' col ' + colLetter_(cCost) +
+                        ' = "' + costEx.raw + '"');
+      }
+      costFailRows++; costFailShip += n;
+    }
 
     /* Core Rx is a DEFAULT, not a decision: every treatment string that is not
        in ACTUALS_WL_TREATMENTS lands here, whether or not anyone has ever looked
@@ -1196,6 +1671,50 @@ function importActualsFromStaging(commit) {
 
   Logger.log('  actual rows to write   : ' + toWrite.length);
 
+  // ---- rows that brought shipments but no money ---------------------------
+  const cfList = Object.keys(costFail).map(function (k) { return costFail[k]; });
+  cfList.sort(function (a, b) { return b.ship - a.ship; });
+  if (cfList.length) {
+    Logger.log('');
+    Logger.log('--- ' + (costFailRows + costZeroRows) + ' row(s) have a shipment count but ' +
+               'no usable cost: ' +
+               Math.round(costFailShip + costZeroShip).toLocaleString() + ' shipments ---');
+    Logger.log('  These are summed into their segment as costing nothing, which is only');
+    Logger.log('  correct for the ones that really are zero. Every other one drags the');
+    Logger.log('  segment-month blended rate down, because the rate is total cost divided');
+    Logger.log('  by total shipments and the shipments were counted regardless.');
+    Logger.log('');
+    Logger.log('  ' + pad_('bucket', 8) + '  ' + pad_('rows', 6) + '  ' +
+               pad_('shipments', 12) + '  ' + pad_('reason', 34) + '  treatment type');
+    cfList.forEach(function (c) {
+      const why = Object.keys(c.status).sort().map(function (s) {
+        return s + ' x' + c.status[s];
+      }).join(', ');
+      Logger.log('  ' + pad_(c.bucket, 8) + '  ' + pad_(String(c.rows), 6) + '  ' +
+                 pad_(Math.round(c.ship).toLocaleString(), 12) + '  ' +
+                 pad_(why, 34) + '  ' + (c.raw === '' ? '(blank)' : c.raw));
+      c.samples.forEach(function (s) { Logger.log('  ' + pad_('', 8) + '  ' + s); });
+    });
+    Logger.log('');
+    Logger.log('  Reading the reasons:');
+    Logger.log('    NUMBER / PARSED    a real zero. Correct to sum, nothing to chase.');
+    Logger.log('    BLANK              the cost cell is empty — no cost was exported.');
+    Logger.log('    NO_DIGITS          something is in the cell and none of it is a');
+    Logger.log('                       number ("N/A", "-", a bare currency symbol).');
+    Logger.log('    UNPARSEABLE        digits are there but do not form a number.');
+    Logger.log('    PARENS_POSITIVE    "(12.34)" is accounting for MINUS 12.34 and is');
+    Logger.log('                       being summed as PLUS 12.34. Re-export it.');
+    Logger.log('    AMBIGUOUS_DECIMAL  two decimal points, so the locale is mixed');
+    Logger.log('                       ("1.234,56"). The figure summed is wrong.');
+    Logger.log('');
+    Logger.log('  BLANK and NO_DIGITS on a WL row are the shape of the reported bug:');
+    Logger.log('  the count arrives, the cost does not, and the Actuals tab shows a');
+    Logger.log('  segment that looks merely cheap. diagnoseActualsCost() breaks the');
+    Logger.log('  same rows down by brand, country and month.');
+  } else {
+    Logger.log('  cost cells             : every row with shipments also had a cost.');
+  }
+
   // ---- what fell through to Core Rx without being asked about -------------
   const dfList = Object.keys(defaulted).map(function (k) { return defaulted[k]; });
   dfList.sort(function (a, b) { return b.cost - a.cost; });
@@ -1248,7 +1767,9 @@ function importActualsFromStaging(commit) {
     return { ok: true, preview: true, rows: toWrite.length,
              unmatched: Object.keys(unmatched).length,
              defaultedValues: dfList.length, defaultedRows: dfRows,
-             defaultedCost: dfCost };
+             defaultedCost: dfCost,
+             costMissingRows: costFailRows, costMissingShipments: costFailShip,
+             costZeroRows: costZeroRows, costZeroShipments: costZeroShip };
   }
 
   // ---- write --------------------------------------------------------------
@@ -1269,7 +1790,9 @@ function importActualsFromStaging(commit) {
   Logger.log('  Open the Actuals tab in the portal to see them against the forecast.');
   return { ok: true, preview: false, written: res.written, skipped: res.skipped,
            defaultedValues: dfList.length, defaultedRows: dfRows,
-           defaultedCost: dfCost };
+           defaultedCost: dfCost,
+           costMissingRows: costFailRows, costMissingShipments: costFailShip,
+           costZeroRows: costZeroRows, costZeroShipments: costZeroShip };
 }
 
 
