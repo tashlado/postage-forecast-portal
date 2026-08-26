@@ -1566,3 +1566,924 @@ function summariseBulkTest_(checks, batchRef) {
   return { ok: !failed.length, checks: checks.length, failed: failed.length,
            batchRef: batchRef };
 }
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ONE-OFF: ROLL HIGH LEVEL ID 1'S RM FUEL SCHEDULE ONTO MODELLING IDS 9-21
+//
+// A maintenance script, not a feature. bulkUpdateRates can set one value over
+// one date range across a dimension selection; this needs FOUR consecutive
+// periods copied onto an explicit list of routes, which the bulk screen has no
+// shape for. Rather than widen that screen for a one-off, this does the one-off
+// and says exactly what it did.
+//
+// It writes nothing directly. Every change goes through deleteSurchargeRate and
+// saveSurchargeRate, the same two functions the Rates screen calls, so the
+// overlap check, the scope check, Rate_Surcharge_Amends and the Audit_Log all
+// behave exactly as they would for thirteen people making the edits by hand.
+// The cost of that is speed — each call takes its own lock and re-reads the tab
+// — and the benefit is that there is no second write path to keep correct.
+//
+// ── STATUS: NEVER COMMITTED. The job it was written for did not need doing. ───
+//
+// Previewed against the test copy on 2026-08-25 (see docs/TEST_PORTAL.md).
+// runFuelScheduleCopy() has never been run, here or in production.
+//
+// The preview stopped at step 1 and that was the correct outcome. Two things it
+// established that are worth not rediscovering:
+//
+//   1. High Level ID 1 has EIGHTEEN active ROYALMAIL routes, not one. A
+//      Modelling ID is per delivery METHOD, so "the RM route" is RM24, RM48,
+//      ROYALMAIL9AM, TRACKED24, SPECIALDELIVERY1PM and fourteen more. The
+//      "expect exactly one active route" guard below therefore cannot pass for
+//      this High Level ID, and will not pass for any other one either. Anyone
+//      reusing this must first decide how the source route is chosen — most
+//      obviously by adding Method_Code to the source key. Do not "fix" it by
+//      relaxing the guard to take the first match; picking silently among
+//      eighteen schedules is the failure this was built to prevent.
+//
+//   2. Modelling IDs 9-22 ALREADY carried the four periods this was meant to
+//      copy onto 9-21, inserted as one batch (Rate_Surcharge row IDs 1650-1663).
+//      Had the guard not fired, the run would have deactivated 52 correct rows
+//      and rewritten them with identical values: thirteen routes of audit churn
+//      and no change to any forecast.
+//
+// Left in place as tooling rather than deleted, because the same shape is what
+// bringing Modelling IDs 5-8 into line would need — they are the outliers, on
+// two other schedules. See the table in docs/TEST_PORTAL.md. If that never
+// happens, this section is safe to delete whole; nothing references it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Where the schedule is copied FROM, and what it must look like before we trust it. */
+const FUEL_COPY_SOURCE_HL_ID   = 1;
+const FUEL_COPY_CODE           = 'FUEL';
+
+/**
+ * Accepted spellings of the Royal Mail carrier code, most likely first.
+ *
+ * A list rather than one literal because "the RM route" is what a person says
+ * and `ROYALMAIL` is what Dim_Carrier seeds (setup.gs SEED_CARRIERS), and a
+ * migrated sheet may carry either. Every entry is matched EXACTLY after
+ * normKey — this is an allowlist of spellings, not a fuzzy match, so it cannot
+ * quietly bind to some other carrier the way a substring rule could.
+ *
+ * If more than one of these turns up under the source High Level ID, that is
+ * reported and the run stops rather than picking one.
+ */
+const FUEL_COPY_SOURCE_CARRIERS = ['ROYALMAIL', 'RM', 'ROYAL_MAIL', 'RMG', 'ROYAL MAIL'];
+
+/** Inclusive range of Modelling IDs to copy ONTO. */
+const FUEL_COPY_TARGET_FROM = 9;
+const FUEL_COPY_TARGET_TO   = 21;
+
+/**
+ * The schedule as it was typed into the portal, restated here so the script can
+ * refuse to run if the sheet no longer says this.
+ *
+ * This is a transcription of a manual edit, which is exactly the kind of input
+ * worth not trusting: if someone corrects a date on the source route between
+ * that edit and this run, a copy that read the source blindly would quietly
+ * propagate a different schedule than the one that was signed off. So the source
+ * is read, compared against this, and any disagreement stops the run and prints
+ * both sides.
+ *
+ * Values are fractions because FUEL is seeded PCT in Dim_Surcharge (0.11 = 11%),
+ * which is what saveSurchargeRate validates against.
+ */
+const FUEL_COPY_EXPECTED = [
+  { from: '2026-01-01', to: '2026-05-03', value: 0.11 },
+  { from: '2026-05-04', to: '2026-06-12', value: 0.16 },
+  { from: '2026-06-13', to: '2026-09-30', value: 0.11 },
+  { from: '2026-10-01', to: '2029-12-01', value: 0.14 }
+];
+
+const FUEL_COPY_SOURCE_REF = 'Bulk copy from HL1 RM';
+
+/** Fractions compared with a tolerance, because 0.11 does not survive a round trip exactly. */
+function fuelCopyValuesMatch_(a, b) { return Math.abs(safeNum(a) - safeNum(b)) < 1e-9; }
+
+/** A route's active rows for one surcharge code, oldest period first. */
+function fuelCopyRowsFor_(modellingId, code) {
+  const data = getAllData_(SHEET.RATE_SURCHARGE), C = COL.RATE_SURCHARGE;
+  const out = [];
+  for (let i = 1; i < data.length; i++) {
+    if (safeInt(data[i][C.Modelling_ID]) !== safeInt(modellingId)) continue;
+    if (normKey(data[i][C.Surcharge_Code]) !== normKey(code)) continue;
+    if (!safeBool(data[i][C.Active])) continue;
+    out.push({
+      id:         safeInt(data[i][C.Surcharge_Rate_ID]),
+      from:       fmtDate(data[i][C.Valid_From]),
+      to:         fmtDate(data[i][C.Valid_To]),
+      fromKey:    dateKey(data[i][C.Valid_From]),
+      value:      safeNum(data[i][C.Value]),
+      scenarioId: safeInt(data[i][C.Scenario_ID]) || 1
+    });
+  }
+  out.sort(function (a, b) { return a.fromKey - b.fromKey; });
+  return out;
+}
+
+/** "2026-01-01 to 2026-05-03    0.1100   scenario 1, row id 42" */
+function fuelCopyDescribe_(r) {
+  return r.from + ' to ' + r.to + '  ' + pad_(safeNum(r.value).toFixed(4), 8) +
+         '   scenario ' + r.scenarioId + (r.id ? ', row id ' + r.id : '');
+}
+
+/**
+ * Roll the FUEL schedule from High Level ID 1's RM route onto Modelling IDs 9-21.
+ *
+ * @param {boolean} commit  false (default) logs the plan and writes nothing
+ */
+function copyFuelScheduleToModellingIds(commit) {
+  requireMaintenance_();
+  const t0 = Date.now();
+  Logger.log(commit ? '=== COPYING FUEL SCHEDULE (WRITING) ==='
+                    : '=== FUEL SCHEDULE COPY — PREVIEW (nothing written) ===');
+
+  prewarmSheetCache_([SHEET.RATE_SURCHARGE, SHEET.MODELLING_IDS, SHEET.HIGH_LEVEL_IDS,
+                      SHEET.DIM_SURCHARGE, SHEET.PERMISSIONS, SHEET.PORTAL_ROLES,
+                      SHEET.SCOPE_MAPPING, SHEET.CONFIG]);
+
+  const perms = requirePermissions_();
+  requireEditRates_(perms);
+
+  const def = surchargeDefinition_(FUEL_COPY_CODE);
+  if (!def) throw new Error('Dim_Surcharge has no "' + FUEL_COPY_CODE + '" row, so this ' +
+    'cannot run. Add the surcharge type first.');
+  Logger.log('  surcharge   : ' + FUEL_COPY_CODE + '  (' + def.valueType + ', ' +
+             def.proration + ')');
+  Logger.log('  running as  : ' + perms.email + '  role ' + perms.role +
+             (perms.allAccess ? '  (all access)' : ''));
+
+  // ═══ 1. Find the source route, and refuse to guess ════════════════════════
+  const md = getAllData_(SHEET.MODELLING_IDS), M = COL.MODELLING_IDS;
+
+  /* Every route under the source High Level ID, whatever its carrier, plus a
+     census of carrier codes across the whole tab. Gathered BEFORE deciding
+     anything, because the useful thing to print when the expected carrier is
+     absent is the list of carriers that are actually there — "check the carrier
+     code in Modelling_IDs" is a failure message that makes the reader go and do
+     by hand what the function already had the data to do for them. */
+  const underHl = [], carrierCensus = {};
+  for (let i = 1; i < md.length; i++) {
+    const id = safeInt(md[i][M.Modelling_ID]);
+    if (!id) continue;
+    const carrier = normKey(md[i][M.Carrier_Code]);
+    carrierCensus[carrier] = (carrierCensus[carrier] || 0) + 1;
+    if (safeInt(md[i][M.High_Level_ID]) !== FUEL_COPY_SOURCE_HL_ID) continue;
+    underHl.push({
+      id: id, carrier: carrier,
+      code:   safeStr(md[i][M.Modelling_Code]),
+      method: safeStr(md[i][M.Method_Code]),
+      lp:     safeStr(md[i][M.Letter_Parcel]),
+      active: safeBool(md[i][M.Active])
+    });
+  }
+  underHl.sort(function (a, b) { return a.id - b.id; });
+
+  Logger.log('');
+  Logger.log('--- 1. source: High Level ID ' + FUEL_COPY_SOURCE_HL_ID + ', carrier one of ' +
+             FUEL_COPY_SOURCE_CARRIERS.join(' / ') + ' ---');
+
+  /* Which accepted spellings are actually present. Exact matches only. */
+  const spellingsPresent = FUEL_COPY_SOURCE_CARRIERS
+    .map(function (c) { return normKey(c); })
+    .filter(function (c, i, a) { return a.indexOf(c) === i; })
+    .filter(function (c) {
+      return underHl.some(function (r) { return r.carrier === c && r.active; });
+    });
+
+  if (!spellingsPresent.length) {
+    Logger.log('  NOTHING FOUND. No ACTIVE Modelling ID under High Level ID ' +
+               FUEL_COPY_SOURCE_HL_ID + ' has a Carrier_Code matching any of: ' +
+               FUEL_COPY_SOURCE_CARRIERS.join(', '));
+    Logger.log('');
+    if (!underHl.length) {
+      Logger.log('  In fact High Level ID ' + FUEL_COPY_SOURCE_HL_ID + ' has NO Modelling IDs');
+      Logger.log('  at all. Check the High Level ID is the one you meant.');
+    } else {
+      Logger.log('  What High Level ID ' + FUEL_COPY_SOURCE_HL_ID + ' actually has:');
+      underHl.forEach(function (r) {
+        Logger.log('    Modelling ID ' + pad_(r.id, 4) + '  carrier ' + pad_(r.carrier, 12) +
+                   '  method ' + pad_(r.method, 14) + '  ' + pad_(r.lp, 7) +
+                   (r.active ? '' : '   [INACTIVE]'));
+      });
+    }
+    Logger.log('');
+    Logger.log('  Every Carrier_Code in Modelling_IDs, with how many routes use it:');
+    Object.keys(carrierCensus).sort().forEach(function (c) {
+      Logger.log('    ' + pad_(carrierCensus[c], 5) + '  ' + (c || '(blank)'));
+    });
+    Logger.log('');
+    Logger.log('  If the right code is in the census but not in the accepted list, add it to');
+    Logger.log('  FUEL_COPY_SOURCE_CARRIERS in rates.gs and run this again.');
+    return { ok: false, reason: 'no source route',
+             highLevelIdRoutes: underHl, carrierCensus: carrierCensus };
+  }
+
+  if (spellingsPresent.length > 1) {
+    Logger.log('  STOPPING. High Level ID ' + FUEL_COPY_SOURCE_HL_ID + ' has active routes ' +
+               'under MORE THAN ONE accepted spelling of the carrier: ' +
+               spellingsPresent.join(', ') + '.');
+    Logger.log('  These are probably the same carrier entered two ways, which is a data');
+    Logger.log('  problem worth fixing before a schedule is copied off one of them.');
+    underHl.forEach(function (r) {
+      Logger.log('    Modelling ID ' + pad_(r.id, 4) + '  carrier ' + pad_(r.carrier, 12) +
+                 '  method ' + pad_(r.method, 14) + (r.active ? '' : '   [INACTIVE]'));
+    });
+    return { ok: false, reason: 'carrier code spelled more than one way',
+             spellings: spellingsPresent };
+  }
+
+  const sourceCarrier = spellingsPresent[0];
+  Logger.log('  matched Carrier_Code: ' + sourceCarrier +
+             (sourceCarrier === normKey(FUEL_COPY_SOURCE_CARRIERS[0]) ? ''
+              : '   (an alternative spelling — ' +
+                normKey(FUEL_COPY_SOURCE_CARRIERS[0]) + ' is the expected one)'));
+
+  const candidates = underHl.filter(function (r) { return r.carrier === sourceCarrier; });
+
+  /* Every candidate is listed with its schedule BEFORE any decision, because the
+     thing worth knowing when there is more than one is not "which did it pick"
+     but "do they even agree". */
+  candidates.forEach(function (c) {
+    const rows = fuelCopyRowsFor_(c.id, FUEL_COPY_CODE);
+    Logger.log('  Modelling ID ' + c.id + '  ' + c.code + '  method ' + c.method +
+               '  ' + c.lp + (c.active ? '' : '   [INACTIVE]'));
+    if (!rows.length) Logger.log('      no active ' + FUEL_COPY_CODE + ' rows');
+    rows.forEach(function (r) { Logger.log('      ' + fuelCopyDescribe_(r)); });
+  });
+
+  const active = candidates.filter(function (c) { return c.active; });
+  if (active.length !== 1) {
+    Logger.log('');
+    Logger.log('  STOPPING. Expected exactly one ACTIVE ' + sourceCarrier +
+               ' route under High Level ID ' +
+               FUEL_COPY_SOURCE_HL_ID + ', found ' + active.length + '.');
+    Logger.log('  Their schedules are printed above — compare them and tell me which one');
+    Logger.log('  is the source, or deactivate the ones that are not.');
+    return { ok: false, reason: 'source is ambiguous',
+             candidates: candidates.map(function (c) { return c.id; }),
+             activeCandidates: active.map(function (c) { return c.id; }) };
+  }
+
+  const sourceId = active[0].id;
+  const sourceRows = fuelCopyRowsFor_(sourceId, FUEL_COPY_CODE);
+  Logger.log('');
+  Logger.log('  source is Modelling ID ' + sourceId + ' (the only active RM route).');
+
+  // ═══ 2. Confirm the source matches the schedule that was signed off ═══════
+  Logger.log('');
+  Logger.log('--- 2. does the source match the four periods I was given? ---');
+  const diffs = [];
+  if (sourceRows.length !== FUEL_COPY_EXPECTED.length) {
+    diffs.push('expected ' + FUEL_COPY_EXPECTED.length + ' active periods, found ' +
+               sourceRows.length);
+  }
+  const n = Math.max(sourceRows.length, FUEL_COPY_EXPECTED.length);
+  for (let i = 0; i < n; i++) {
+    const want = FUEL_COPY_EXPECTED[i], got = sourceRows[i];
+    if (!want) { diffs.push('period ' + (i + 1) + ': unexpected extra — ' +
+                            fuelCopyDescribe_(got)); continue; }
+    if (!got)  { diffs.push('period ' + (i + 1) + ': missing — expected ' + want.from +
+                            ' to ' + want.to + '  ' + want.value.toFixed(4)); continue; }
+    if (got.from !== want.from || got.to !== want.to ||
+        !fuelCopyValuesMatch_(got.value, want.value)) {
+      diffs.push('period ' + (i + 1) + ': expected ' + want.from + ' to ' + want.to +
+                 '  ' + want.value.toFixed(4) + '   but found ' + got.from + ' to ' +
+                 got.to + '  ' + got.value.toFixed(4));
+    }
+  }
+
+  FUEL_COPY_EXPECTED.forEach(function (w, i) {
+    Logger.log('  expected ' + (i + 1) + '  ' + w.from + ' to ' + w.to + '  ' +
+               pad_(w.value.toFixed(4), 8));
+  });
+  if (diffs.length) {
+    Logger.log('');
+    Logger.log('  STOPPING. The source does not match what I was told to copy:');
+    diffs.forEach(function (d) { Logger.log('    ' + d); });
+    Logger.log('  Nothing has been written. Either the source was edited after those four');
+    Logger.log('  periods were given to me, or the periods were transcribed wrongly — and');
+    Logger.log('  I cannot tell which, so I am not guessing.');
+    return { ok: false, reason: 'source does not match the expected schedule',
+             sourceModellingId: sourceId, differences: diffs };
+  }
+  Logger.log('  MATCHES — all ' + FUEL_COPY_EXPECTED.length + ' periods agree.');
+
+  const sourceScenarios = {};
+  sourceRows.forEach(function (r) { sourceScenarios[r.scenarioId] = true; });
+  Logger.log('  source Scenario_ID(s): ' + Object.keys(sourceScenarios).join(', ') +
+             '   (targets keep their OWN scenario, not the source one)');
+
+  // ═══ 3. Plan each target ═════════════════════════════════════════════════
+  const midById = {};
+  for (let i = 1; i < md.length; i++) {
+    const id = safeInt(md[i][M.Modelling_ID]);
+    if (id) midById[id] = { id: id, code: safeStr(md[i][M.Modelling_Code]),
+                            hlId: safeInt(md[i][M.High_Level_ID]),
+                            carrier: normKey(md[i][M.Carrier_Code]),
+                            active: safeBool(md[i][M.Active]) };
+  }
+
+  Logger.log('');
+  Logger.log('--- 3. targets: Modelling IDs ' + FUEL_COPY_TARGET_FROM + ' to ' +
+             FUEL_COPY_TARGET_TO + ' ---');
+
+  const plan = [], skipped = [];
+  for (let mid = FUEL_COPY_TARGET_FROM; mid <= FUEL_COPY_TARGET_TO; mid++) {
+    const meta = midById[mid];
+    Logger.log('');
+    Logger.log('  Modelling ID ' + mid + (meta ? '  ' + meta.code + '  HL' + meta.hlId +
+               ' ' + meta.carrier : ''));
+
+    const skip = function (why) {
+      Logger.log('      SKIPPED — ' + why);
+      skipped.push({ modellingId: mid, reason: why });
+    };
+
+    if (!meta)            { skip('no such Modelling ID in Modelling_IDs'); continue; }
+    if (!meta.active)     { skip('the route is inactive'); continue; }
+    if (mid === sourceId) { skip('this IS the source route — already correct, so it is ' +
+                                'left alone rather than rewritten'); continue; }
+    /* The non-throwing form, so one out-of-scope route does not end the batch.
+       saveSurchargeRate re-checks this itself; this only decides whether to try. */
+    if (!canSeeModellingId_(perms, mid, true)) {
+      skip('outside what ' + perms.email + ' can edit'); continue;
+    }
+
+    const current = fuelCopyRowsFor_(mid, FUEL_COPY_CODE);
+    if (!current.length) {
+      Logger.log('      currently: no active ' + FUEL_COPY_CODE + ' rows');
+    } else {
+      current.forEach(function (r) { Logger.log('      currently: ' + fuelCopyDescribe_(r)); });
+    }
+
+    /* Scenario_ID is carried over, not assumed. A route whose FUEL rows sit on
+       more than one scenario is skipped rather than resolved: writing four rows
+       on one scenario while deactivating rows across two would collapse a
+       distinction someone deliberately made, and there is nothing here that says
+       which scenario was meant. */
+    const scenarios = {};
+    current.forEach(function (r) { scenarios[r.scenarioId] = true; });
+    const scenarioKeys = Object.keys(scenarios);
+    if (scenarioKeys.length > 1) {
+      skip('its ' + FUEL_COPY_CODE + ' rows span Scenario_IDs ' + scenarioKeys.join(', ') +
+           ' — tell me which one to write to and I will run it again');
+      continue;
+    }
+    const scenarioId = scenarioKeys.length ? safeInt(scenarioKeys[0]) : 1;
+    Logger.log('      scenario : ' + scenarioId +
+               (scenarioKeys.length ? '  (carried over from the rows above)'
+                                    : '  (no existing rows, so defaulting to 1)'));
+
+    FUEL_COPY_EXPECTED.forEach(function (w, i) {
+      Logger.log('      becomes  ' + (i + 1) + '  ' + w.from + ' to ' + w.to + '  ' +
+                 pad_(w.value.toFixed(4), 8) + '   scenario ' + scenarioId);
+    });
+
+    plan.push({ modellingId: mid, scenarioId: scenarioId,
+                deleteIds: current.map(function (r) { return r.id; }),
+                current: current });
+  }
+
+  const rowsToDeactivate = plan.reduce(function (a, x) { return a + x.deleteIds.length; }, 0);
+
+  Logger.log('');
+  Logger.log('--- summary ---');
+  Logger.log('  targets to change  : ' + plan.length);
+  Logger.log('  rows to deactivate : ' + rowsToDeactivate);
+  Logger.log('  rows to create     : ' + (plan.length * FUEL_COPY_EXPECTED.length));
+  Logger.log('  skipped            : ' + skipped.length);
+  skipped.forEach(function (s) {
+    Logger.log('      ' + s.modellingId + ' — ' + s.reason);
+  });
+
+  if (!commit) {
+    Logger.log('');
+    Logger.log('  NOTHING WRITTEN. Run copyFuelScheduleToModellingIds(true) — or');
+    Logger.log('  runFuelScheduleCopy() — to apply exactly the plan above.');
+    return { ok: true, preview: true, sourceModellingId: sourceId,
+             targets: plan.length, skipped: skipped,
+             rowsToDeactivate: rowsToDeactivate,
+             rowsToCreate: plan.length * FUEL_COPY_EXPECTED.length,
+             plan: plan.map(function (x) {
+               return { modellingId: x.modellingId, scenarioId: x.scenarioId,
+                        replacing: x.deleteIds.length }; }) };
+  }
+
+  if (!plan.length) throw new Error('Nothing to do — every target was skipped. The ' +
+    'reasons are in the log above.');
+
+  // ═══ 4. Write, one target at a time ══════════════════════════════════════
+  Logger.log('');
+  Logger.log('--- 4. writing ---');
+  const done = [], failed = [];
+
+  plan.forEach(function (x) {
+    const note = 'FUEL schedule copied from Modelling ID ' + sourceId +
+                 ' (High Level ID ' + FUEL_COPY_SOURCE_HL_ID + ' ' +
+                 sourceCarrier + ')';
+    let deactivated = 0, created = 0;
+    try {
+      /* Re-read rather than trusting the plan's IDs. Every call below invalidates
+         the cache, and this is a long batch with no lock held across it — so what
+         is actually active for this route right now is the only safe thing to
+         deactivate. A difference from the preview is worth saying out loud. */
+      invalidateSheetCache_(SHEET.RATE_SURCHARGE);
+      const nowRows = fuelCopyRowsFor_(x.modellingId, FUEL_COPY_CODE);
+      const nowIds  = nowRows.map(function (r) { return r.id; }).sort().join(',');
+      const planIds = x.deleteIds.slice().sort().join(',');
+      if (nowIds !== planIds) {
+        Logger.log('  Modelling ID ' + x.modellingId + ': rows changed since the preview ' +
+                   '(was [' + planIds + '], now [' + nowIds + ']) — deactivating what is ' +
+                   'actually there.');
+      }
+
+      nowRows.forEach(function (r) { deleteSurchargeRate(r.id); deactivated++; });
+
+      FUEL_COPY_EXPECTED.forEach(function (w) {
+        saveSurchargeRate({
+          modellingId: x.modellingId,
+          code:        FUEL_COPY_CODE,
+          validFrom:   w.from,
+          validTo:     w.to,
+          value:       w.value,
+          scenarioId:  x.scenarioId,
+          sourceRef:   FUEL_COPY_SOURCE_REF,
+          notes:       note
+          /* closePrevious deliberately NOT set. The four periods are already
+             exactly contiguous, so closing the preceding one would rewrite its
+             Valid_To to the date it already holds — a no-change amend row per
+             period, thirteen times over. assertNoOverlap_ still runs on every
+             save, which is the check that actually matters here. */
+        });
+        created++;
+      });
+
+      Logger.log('  Modelling ID ' + pad_(x.modellingId, 3) + '  OK — ' + deactivated +
+                 ' deactivated, ' + created + ' created, scenario ' + x.scenarioId);
+      done.push({ modellingId: x.modellingId, deactivated: deactivated, created: created });
+
+    } catch (e) {
+      /* One target's failure must not end the batch, but a target that failed
+         PART WAY is a different problem: its old rows may be off and its new ones
+         incomplete, which is a route with a gap in its FUEL schedule. Said loudly,
+         with the counts, because the fix depends on how far it got. */
+      const partial = (deactivated > 0 || created > 0) && created < FUEL_COPY_EXPECTED.length;
+      Logger.log('  Modelling ID ' + pad_(x.modellingId, 3) + '  ' +
+                 (partial ? '** PART DONE **' : 'FAILED') + ' — ' + e.message);
+      if (partial) {
+        Logger.log('      ' + deactivated + ' row(s) deactivated and only ' + created +
+                   ' of ' + FUEL_COPY_EXPECTED.length + ' created. This route now has an ' +
+                   'INCOMPLETE FUEL schedule and needs fixing by hand or by re-running.');
+      }
+      failed.push({ modellingId: x.modellingId, error: e.message,
+                    deactivated: deactivated, created: created, partial: partial });
+    }
+  });
+
+  const partials = failed.filter(function (f) { return f.partial; });
+  Logger.log('');
+  Logger.log('--- done in ' + Math.round((Date.now() - t0) / 1000) + 's ---');
+  Logger.log('  changed : ' + done.length + ' route(s)');
+  Logger.log('  failed  : ' + failed.length + ' route(s)');
+  Logger.log('  skipped : ' + skipped.length + ' route(s)');
+  if (partials.length) {
+    Logger.log('');
+    Logger.log('  ** ' + partials.length + ' route(s) are PART DONE and have an incomplete');
+    Logger.log('     FUEL schedule right now: ' +
+               partials.map(function (f) { return f.modellingId; }).join(', '));
+    Logger.log('     Re-run the preview to see where they stand before doing anything else.');
+  }
+  Logger.log('');
+  Logger.log('  Every change went through saveSurchargeRate / deleteSurchargeRate, so it is');
+  Logger.log('  all in Rate_Surcharge_Amends and the Audit_Log. Re-run the calculation and');
+  Logger.log('  publish for the new schedule to reach the forecast.');
+
+  return { ok: !failed.length, preview: false, sourceModellingId: sourceId,
+           changed: done.length, failed: failed, skipped: skipped,
+           partial: partials.map(function (f) { return f.modellingId; }),
+           seconds: Math.round((Date.now() - t0) / 1000) };
+}
+
+/** Convenience wrappers, so both appear in the editor's function list. */
+function previewFuelScheduleCopy() { return copyFuelScheduleToModellingIds(false); }
+function runFuelScheduleCopy()     { return copyFuelScheduleToModellingIds(true); }
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SPREAD A ROUTE'S FUEL SCHEDULE TO THE SAME ROUTE UNDER EVERY OTHER HL ID
+//
+// The sibling of copyFuelScheduleToModellingIds, turned ninety degrees. That one
+// held the High Level ID fixed and walked a list of Modelling IDs. This holds
+// the ROUTE fixed — carrier, method and letter/parcel — and walks every other
+// High Level ID, because "I have updated Modelling IDs 5 and 6 for High Level ID
+// 1, now do the rest" is a statement about a delivery method, not about a range
+// of IDs.
+//
+// Two deliberate differences from the earlier one-off, both learned from it:
+//
+//   1. NO TRANSCRIBED SCHEDULE. copyFuelScheduleToModellingIds compared the
+//      source against four periods typed into a chat message, which was right
+//      for that job because a human had dictated them. Here nobody has, so
+//      inventing an expectation would only create a second thing that can be
+//      wrong. The source's live rows ARE the specification; the preview's job is
+//      to put them on screen where a person can read them before committing.
+//
+//   2. METHODS ARE DERIVED, NOT NAMED. The input is the two Modelling IDs that
+//      were actually edited. Their carrier, method and letter/parcel are read
+//      off them. Hardcoding 'FIRSTCLASSNOSIG' would be the same mistake as
+//      hardcoding 'RM' when the data says 'ROYALMAIL'.
+//
+// FUEL only. Base rates and every other surcharge code are untouched.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The routes whose FUEL schedule is authoritative. Everything else is derived.
+ *
+ * Modelling IDs rather than a carrier/method pair because these are the rows a
+ * person edited and can point at. The run reports what each one turns out to be
+ * and refuses if they are not all under one High Level ID.
+ */
+const FUEL_SPREAD_SOURCE_MIDS = [5, 6];
+
+const FUEL_SPREAD_SOURCE_REF = 'Bulk copy from HL1 by method';
+
+/** Modelling_IDs keyed by ID, with the four fields that identify a route. */
+function fuelSpreadRoutes_() {
+  const md = getAllData_(SHEET.MODELLING_IDS), M = COL.MODELLING_IDS;
+  const byId = {}, all = [];
+  for (let i = 1; i < md.length; i++) {
+    const id = safeInt(md[i][M.Modelling_ID]);
+    if (!id) continue;
+    const r = {
+      id: id,
+      hlId:    safeInt(md[i][M.High_Level_ID]),
+      carrier: normKey(md[i][M.Carrier_Code]),
+      method:  normKey(md[i][M.Method_Code]),
+      lp:      normKey(md[i][M.Letter_Parcel]),
+      code:    safeStr(md[i][M.Modelling_Code]),
+      active:  safeBool(md[i][M.Active])
+    };
+    byId[id] = r;
+    all.push(r);
+  }
+  return { byId: byId, all: all };
+}
+
+/** "ROYALMAIL / FIRSTCLASSNOSIG / PARCEL" — the identity a target must share. */
+function fuelSpreadRouteKey_(r) {
+  return r.carrier + ' / ' + r.method + ' / ' + r.lp;
+}
+
+/**
+ * Copy each source route's FUEL schedule onto the same route under every other
+ * High Level ID.
+ *
+ * @param {boolean} commit  false (default) logs the plan and writes nothing
+ */
+function copyFuelScheduleToOtherHighLevelIds(commit) {
+  requireMaintenance_();
+  const t0 = Date.now();
+  Logger.log(commit ? '=== SPREADING FUEL SCHEDULE BY METHOD (WRITING) ==='
+                    : '=== FUEL SCHEDULE SPREAD — PREVIEW (nothing written) ===');
+
+  prewarmSheetCache_([SHEET.RATE_SURCHARGE, SHEET.MODELLING_IDS, SHEET.HIGH_LEVEL_IDS,
+                      SHEET.DIM_SURCHARGE, SHEET.PERMISSIONS, SHEET.PORTAL_ROLES,
+                      SHEET.SCOPE_MAPPING, SHEET.CONFIG]);
+
+  const perms = requirePermissions_();
+  requireEditRates_(perms);
+
+  const def = surchargeDefinition_(FUEL_COPY_CODE);
+  if (!def) throw new Error('Dim_Surcharge has no "' + FUEL_COPY_CODE + '" row.');
+  Logger.log('  surcharge   : ' + FUEL_COPY_CODE + '  (' + def.valueType + ', ' +
+             def.proration + ')   — nothing else is touched');
+  Logger.log('  running as  : ' + perms.email + '  role ' + perms.role +
+             (perms.allAccess ? '  (all access)' : ''));
+
+  const routes = fuelSpreadRoutes_();
+
+  // ═══ 1. Resolve the source routes ════════════════════════════════════════
+  Logger.log('');
+  Logger.log('--- 1. sources: Modelling IDs ' + FUEL_SPREAD_SOURCE_MIDS.join(' and ') + ' ---');
+
+  const sources = [], sourceProblems = [];
+  FUEL_SPREAD_SOURCE_MIDS.forEach(function (id) {
+    const r = routes.byId[id];
+    if (!r) { sourceProblems.push('Modelling ID ' + id + ' does not exist'); return; }
+    if (!r.active) { sourceProblems.push('Modelling ID ' + id + ' is inactive'); return; }
+
+    const rows = fuelCopyRowsFor_(id, FUEL_COPY_CODE);
+    Logger.log('  Modelling ID ' + r.id + '  HL' + r.hlId + '  ' + fuelSpreadRouteKey_(r));
+    Logger.log('      ' + r.code);
+    if (!rows.length) {
+      Logger.log('      NO ACTIVE ' + FUEL_COPY_CODE + ' ROWS');
+      /* Refuse rather than treat it as "copy nothing". Spreading an empty
+         schedule means deactivating every target's FUEL rows and creating none,
+         which silently prices those routes at zero fuel — the RATE_MISSING
+         failure the engine has a check for. Never do that by implication. */
+      sourceProblems.push('Modelling ID ' + id + ' has no active ' + FUEL_COPY_CODE +
+        ' rows, so there is nothing to copy. Spreading it would delete every ' +
+        'target\'s fuel schedule and replace it with nothing.');
+      return;
+    }
+    rows.forEach(function (x) { Logger.log('      ' + fuelCopyDescribe_(x)); });
+    sources.push({ route: r, rows: rows, key: fuelSpreadRouteKey_(r) });
+  });
+
+  if (sourceProblems.length) {
+    Logger.log('');
+    Logger.log('  STOPPING. The sources are not usable as given:');
+    sourceProblems.forEach(function (p) { Logger.log('    ' + p); });
+    return { ok: false, reason: 'source not usable', problems: sourceProblems };
+  }
+
+  /* All sources must sit under one High Level ID. "I have updated them for high
+     level ID 1" is only meaningful if they are in fact all under one, and if two
+     came from different segments the phrase describes no single intention. */
+  const sourceHls = {};
+  sources.forEach(function (s) { sourceHls[s.route.hlId] = true; });
+  const sourceHlIds = Object.keys(sourceHls).map(function (k) { return safeInt(k); });
+  if (sourceHlIds.length !== 1) {
+    Logger.log('');
+    Logger.log('  STOPPING. The source Modelling IDs are spread across High Level IDs ' +
+               sourceHlIds.join(', ') + '. Expected all of them under one.');
+    return { ok: false, reason: 'sources span several High Level IDs',
+             highLevelIds: sourceHlIds };
+  }
+  const sourceHl = sourceHlIds[0];
+  Logger.log('');
+  Logger.log('  all sources are under High Level ID ' + sourceHl +
+             ', which is therefore excluded from the targets.');
+
+  /* Two sources resolving to the same route identity would make the second
+     silently overwrite the first's plan. Cannot happen while a Modelling ID is
+     unique per HL/carrier/method/letter-parcel, which is the point of asserting
+     it rather than assuming it. */
+  const seenKeys = {};
+  for (let i = 0; i < sources.length; i++) {
+    if (seenKeys[sources[i].key]) {
+      Logger.log('');
+      Logger.log('  STOPPING. Modelling IDs ' + FUEL_SPREAD_SOURCE_MIDS.join(' and ') +
+                 ' describe the same route (' + sources[i].key + '), so one would ' +
+                 'overwrite the other.');
+      return { ok: false, reason: 'sources are the same route', key: sources[i].key };
+    }
+    seenKeys[sources[i].key] = true;
+  }
+
+  /* Whether the sources agree with each other is worth stating, because a person
+     who edited "them" as a pair probably expects them to match — and if they do
+     not, each still spreads its own, which is correct but worth seeing. */
+  if (sources.length > 1) {
+    const shape = function (s) {
+      return s.rows.map(function (x) {
+        return x.from + '>' + x.to + '@' + safeNum(x.value).toFixed(4); }).join(' | ');
+    };
+    const first = shape(sources[0]);
+    const agree = sources.every(function (s) { return shape(s) === first; });
+    Logger.log('  the ' + sources.length + ' source schedules ' +
+               (agree ? 'are IDENTICAL to each other.'
+                      : 'DIFFER from each other — each spreads its own, not a merge.'));
+  }
+
+  // ═══ 2. Find the targets ═════════════════════════════════════════════════
+  Logger.log('');
+  Logger.log('--- 2. targets: the same route under every other High Level ID ---');
+
+  const plan = [], skipped = [], nearMisses = [];
+  let totalDeletes = 0;
+
+  sources.forEach(function (s) {
+    Logger.log('');
+    Logger.log('  === ' + s.key + '   (from Modelling ID ' + s.route.id + ') ===');
+
+    /* Matched on carrier AND method AND letter/parcel — the whole route identity.
+       Routes sharing carrier and method but differing on letter/parcel are
+       reported separately rather than swept in: a LETTER route is a different
+       thing from a PARCEL one and the engine branches on it. Listing them means
+       nothing is missed silently in either direction. */
+    const targets = routes.all.filter(function (r) {
+      return r.hlId !== sourceHl && r.carrier === s.route.carrier &&
+             r.method === s.route.method && r.lp === s.route.lp;
+    }).sort(function (a, b) { return a.hlId - b.hlId || a.id - b.id; });
+
+    routes.all.forEach(function (r) {
+      if (r.hlId === sourceHl) return;
+      if (r.carrier !== s.route.carrier || r.method !== s.route.method) return;
+      if (r.lp === s.route.lp) return;
+      nearMisses.push({ id: r.id, hlId: r.hlId, key: fuelSpreadRouteKey_(r),
+                        wanted: s.key });
+    });
+
+    if (!targets.length) {
+      Logger.log('    No other High Level ID has this route at all.');
+      return;
+    }
+
+    targets.forEach(function (r) {
+      const label = '    Modelling ID ' + pad_(r.id, 4) + '  HL' + pad_(r.hlId, 3);
+
+      if (!r.active) {
+        Logger.log(label + '  SKIPPED — the route is inactive');
+        skipped.push({ modellingId: r.id, hlId: r.hlId, reason: 'route is inactive' });
+        return;
+      }
+      if (!canSeeModellingId_(perms, r.id, true)) {
+        Logger.log(label + '  SKIPPED — outside what ' + perms.email + ' can edit');
+        skipped.push({ modellingId: r.id, hlId: r.hlId, reason: 'outside editable scope' });
+        return;
+      }
+
+      const current = fuelCopyRowsFor_(r.id, FUEL_COPY_CODE);
+
+      const scenarios = {};
+      current.forEach(function (x) { scenarios[x.scenarioId] = true; });
+      const scenarioKeys = Object.keys(scenarios);
+      if (scenarioKeys.length > 1) {
+        Logger.log(label + '  SKIPPED — its ' + FUEL_COPY_CODE + ' rows span Scenario_IDs ' +
+                   scenarioKeys.join(', '));
+        skipped.push({ modellingId: r.id, hlId: r.hlId,
+                       reason: 'FUEL rows span Scenario_IDs ' + scenarioKeys.join(', ') });
+        return;
+      }
+      const scenarioId = scenarioKeys.length ? safeInt(scenarioKeys[0]) : 1;
+
+      /* Already correct is worth detecting, not just tolerating. The previous
+         one-off would have rewritten 52 identical rows had a different guard not
+         stopped it; skipping a match here costs one comparison and saves the
+         audit trail from changes that change nothing. */
+      const same = current.length === s.rows.length && current.every(function (c, i) {
+        return c.from === s.rows[i].from && c.to === s.rows[i].to &&
+               fuelCopyValuesMatch_(c.value, s.rows[i].value);
+      });
+      if (same) {
+        Logger.log(label + '  already matches — left alone');
+        skipped.push({ modellingId: r.id, hlId: r.hlId,
+                       reason: 'already has this exact schedule' });
+        return;
+      }
+
+      Logger.log(label + '  ' + current.length + ' row(s) -> ' + s.rows.length +
+                 ', scenario ' + scenarioId +
+                 (scenarioKeys.length ? '' : ' (defaulted, no existing rows)'));
+      current.forEach(function (x) { Logger.log('           was: ' + fuelCopyDescribe_(x)); });
+      s.rows.forEach(function (x, i) {
+        Logger.log('           now: ' + (i + 1) + '  ' + x.from + ' to ' + x.to + '  ' +
+                   pad_(safeNum(x.value).toFixed(4), 8) + '   scenario ' + scenarioId);
+      });
+
+      totalDeletes += current.length;
+      plan.push({ modellingId: r.id, hlId: r.hlId, scenarioId: scenarioId,
+                  deleteIds: current.map(function (x) { return x.id; }),
+                  rows: s.rows, sourceId: s.route.id, key: s.key });
+    });
+  });
+
+  // ═══ 3. Summary ══════════════════════════════════════════════════════════
+  const totalCreates = plan.reduce(function (a, x) { return a + x.rows.length; }, 0);
+  const calls = totalDeletes + totalCreates;
+
+  Logger.log('');
+  Logger.log('--- summary ---');
+  Logger.log('  routes to change   : ' + plan.length);
+  Logger.log('  rows to deactivate : ' + totalDeletes);
+  Logger.log('  rows to create     : ' + totalCreates);
+  Logger.log('  skipped            : ' + skipped.length);
+
+  const bySkip = {};
+  skipped.forEach(function (s) { bySkip[s.reason] = (bySkip[s.reason] || 0) + 1; });
+  Object.keys(bySkip).sort().forEach(function (k) {
+    Logger.log('      ' + pad_(bySkip[k], 4) + '  ' + k);
+  });
+
+  if (nearMisses.length) {
+    Logger.log('');
+    Logger.log('--- ' + nearMisses.length + ' route(s) share the carrier and method but NOT ' +
+               'the letter/parcel side, so they are NOT targeted ---');
+    nearMisses.forEach(function (n) {
+      Logger.log('    Modelling ID ' + pad_(n.id, 4) + '  HL' + pad_(n.hlId, 3) + '  ' +
+                 n.key + '   (wanted ' + n.wanted + ')');
+    });
+    Logger.log('  Say so if these should be included and I will widen the match.');
+  }
+
+  /* Every write goes through saveSurchargeRate / deleteSurchargeRate, one lock
+     and one tab re-read each. On the test project, whose GCP project has the
+     Sheets API disabled, reads fall through to one round-trip per tab and run
+     roughly six times slower than production (FINDINGS.md P14) — so the 6-minute
+     ceiling is a real constraint here in a way it is not in production. Said in
+     the preview, where it can still change the decision. */
+  Logger.log('');
+  Logger.log('  ' + calls + ' write call(s) if committed, each taking the script lock and');
+  Logger.log('  re-reading Rate_Surcharge. Against the 6-minute execution ceiling that is');
+  Logger.log('  ' + (calls > 120 ? 'A REAL RISK — consider narrowing the sources and running twice.'
+                                 : calls > 60 ? 'worth watching.' : 'comfortable.'));
+  if (calls > 60) {
+    Logger.log('  Enabling the Sheets API in the test project\'s GCP project (736650435578)');
+    Logger.log('  removes most of the risk — see docs/TEST_PORTAL.md.');
+  }
+
+  if (!commit) {
+    Logger.log('');
+    Logger.log('  NOTHING WRITTEN. Read the "was/now" lines above, then run');
+    Logger.log('  runFuelScheduleSpread() to apply exactly this plan.');
+    return { ok: true, preview: true, sourceHighLevelId: sourceHl,
+             sources: sources.map(function (s) {
+               return { modellingId: s.route.id, key: s.key, periods: s.rows.length }; }),
+             routesToChange: plan.length, rowsToDeactivate: totalDeletes,
+             rowsToCreate: totalCreates, writeCalls: calls,
+             skipped: skipped, nearMisses: nearMisses,
+             plan: plan.map(function (x) {
+               return { modellingId: x.modellingId, hlId: x.hlId,
+                        scenarioId: x.scenarioId, replacing: x.deleteIds.length }; }) };
+  }
+
+  if (!plan.length) throw new Error('Nothing to do — every target was skipped or already ' +
+    'matches. The reasons are in the log above.');
+
+  // ═══ 4. Write ════════════════════════════════════════════════════════════
+  Logger.log('');
+  Logger.log('--- 4. writing ---');
+  const done = [], failed = [];
+
+  plan.forEach(function (x) {
+    const note = FUEL_COPY_CODE + ' schedule copied from Modelling ID ' + x.sourceId +
+                 ' (High Level ID ' + sourceHl + ' ' + x.key + ')';
+    let deactivated = 0, created = 0;
+    try {
+      invalidateSheetCache_(SHEET.RATE_SURCHARGE);
+      const nowRows = fuelCopyRowsFor_(x.modellingId, FUEL_COPY_CODE);
+      const nowIds = nowRows.map(function (r) { return r.id; }).sort().join(',');
+      const planIds = x.deleteIds.slice().sort().join(',');
+      if (nowIds !== planIds) {
+        Logger.log('  Modelling ID ' + x.modellingId + ': rows changed since the preview ' +
+                   '(was [' + planIds + '], now [' + nowIds + ']) — deactivating what is ' +
+                   'actually there.');
+      }
+
+      nowRows.forEach(function (r) { deleteSurchargeRate(r.id); deactivated++; });
+
+      x.rows.forEach(function (w) {
+        saveSurchargeRate({
+          modellingId: x.modellingId,
+          code:        FUEL_COPY_CODE,
+          validFrom:   w.from,
+          validTo:     w.to,
+          value:       w.value,
+          scenarioId:  x.scenarioId,
+          sourceRef:   FUEL_SPREAD_SOURCE_REF,
+          notes:       note
+          /* closePrevious deliberately unset — the source's periods are already
+             contiguous, so closing would rewrite a Valid_To to the date it holds.
+             assertNoOverlap_ still runs on every save. */
+        });
+        created++;
+      });
+
+      Logger.log('  Modelling ID ' + pad_(x.modellingId, 4) + '  HL' + pad_(x.hlId, 3) +
+                 '  OK — ' + deactivated + ' deactivated, ' + created + ' created');
+      done.push({ modellingId: x.modellingId, hlId: x.hlId,
+                  deactivated: deactivated, created: created });
+
+    } catch (e) {
+      const partial = (deactivated > 0 || created > 0) && created < x.rows.length;
+      Logger.log('  Modelling ID ' + pad_(x.modellingId, 4) + '  HL' + pad_(x.hlId, 3) +
+                 '  ' + (partial ? '** PART DONE **' : 'FAILED') + ' — ' + e.message);
+      if (partial) {
+        Logger.log('      ' + deactivated + ' deactivated and only ' + created + ' of ' +
+                   x.rows.length + ' created. This route has an INCOMPLETE fuel schedule.');
+      }
+      failed.push({ modellingId: x.modellingId, hlId: x.hlId, error: e.message,
+                    deactivated: deactivated, created: created, partial: partial });
+    }
+  });
+
+  const partials = failed.filter(function (f) { return f.partial; });
+  Logger.log('');
+  Logger.log('--- done in ' + Math.round((Date.now() - t0) / 1000) + 's ---');
+  Logger.log('  changed : ' + done.length + ' route(s)');
+  Logger.log('  failed  : ' + failed.length + ' route(s)');
+  Logger.log('  skipped : ' + skipped.length + ' route(s)');
+  if (partials.length) {
+    Logger.log('');
+    Logger.log('  ** ' + partials.length + ' route(s) are PART DONE and have an incomplete');
+    Logger.log('     fuel schedule now: ' +
+               partials.map(function (f) { return f.modellingId; }).join(', '));
+  }
+  Logger.log('');
+  Logger.log('  All of it went through saveSurchargeRate / deleteSurchargeRate, so it is in');
+  Logger.log('  Rate_Surcharge_Amends and the Audit_Log. Re-run the calculation and publish');
+  Logger.log('  for these to reach the forecast.');
+
+  return { ok: !failed.length, preview: false, sourceHighLevelId: sourceHl,
+           changed: done.length, failed: failed, skipped: skipped,
+           partial: partials.map(function (f) { return f.modellingId; }),
+           seconds: Math.round((Date.now() - t0) / 1000) };
+}
+
+/** Convenience wrappers, so both appear in the editor's function list. */
+function previewFuelScheduleSpread() { return copyFuelScheduleToOtherHighLevelIds(false); }
+function runFuelScheduleSpread()     { return copyFuelScheduleToOtherHighLevelIds(true); }
