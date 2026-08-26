@@ -175,6 +175,50 @@ function requirePublish_(perms)       { return requireCapability_(perms, 'publis
 function requireManageUsers_(perms)   { return requireCapability_(perms, 'manageUsers', 'manage users'); }
 function requireViewAudit_(perms)     { return requireCapability_(perms, 'viewAudit', 'view the change history'); }
 
+/**
+ * Require the right to load a whole month of actuals from a file.
+ *
+ * This is NOT `write`, and the difference is the point of the function existing.
+ * Every other write gate in this file authorises a change to rows the person is
+ * scoped to: requireEditRates_ is followed by assertCanEditHighLevelId_, and a
+ * MODELLER scoped to UK Core Rx can move UK Core Rx rates and nothing else. The
+ * actuals import has no such narrowing. It reads one file, writes across every
+ * segment in it, and in REPLACE mode deletes the staging tab's entire contents
+ * first, with no undo. One person uploading one wrong file moves the measured
+ * cost of every brand in every country, and the forecast-versus-actual variance
+ * that gets reported off the back of it.
+ *
+ * So the gate is the same set of people who could already do this from the Apps
+ * Script editor — a role with All_Access, or one with Can_Manage_Users, which is
+ * exactly what requireMaintenance_ admits. Deliberately chosen over the two
+ * alternatives:
+ *
+ *   - `write` (or a new Can_Import_Actuals column) would widen the blast radius.
+ *     Today nobody without project edit access can run this at all; putting it
+ *     behind `write` would hand it to every MODELLER and ANALYST, which is a
+ *     change of authority disguised as a change of interface.
+ *   - requireMaintenance_ itself would work, but it reads its own permissions
+ *     rather than taking the perms object the caller already derived, and it
+ *     answers "is this an administrator" rather than "may this person import
+ *     actuals". Naming the question separately means that if a dedicated
+ *     Can_Import_Actuals capability is added to Portal_Roles later, this is the
+ *     one line that changes and every call site follows.
+ *
+ * Note that scope still applies underneath: saveActual checks every row against
+ * Scope_Mapping, so an importer without All_Access silently gets rows refused
+ * rather than written. Those refusals come back in the report's writeErrors, and
+ * are the reason this should in practice be held by All_Access roles only.
+ */
+function requireImportActuals_(perms) {
+  if (perms.allAccess) return true;
+  if (perms.capabilities.manageUsers) return true;
+  logAudit_('DENIED', 'CAPABILITY', 'importActuals', '', '', '',
+            'import actuals from a file', false);
+  throw new Error('Your role (' + perms.role + ') cannot import actuals from a file. ' +
+                  'This affects every segment at once, so it is restricted to ' +
+                  'administrators.');
+}
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SCOPE — which rows this person may touch

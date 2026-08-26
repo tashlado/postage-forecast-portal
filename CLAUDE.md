@@ -52,6 +52,7 @@ object. Key ones, roughly in the order you'd use them on a fresh setup:
 - `testApiPayload()` — times `initApp()` + `loadAllAppData()` end-to-end and prints payload sizes
 - `runEnginePreview()` (`engine.js`), `previewOutput()` (`output.js`) — run the model without writing anything
 - `diagnoseActuals(hlId)` — inspects imported actuals for a segment, flags rows where cost parsing failed
+- `clearActualsImport()` — empties the `Actuals_Import` staging tab (note: `clearActuals()` empties the derived `Actuals` tab instead — the staging tab has no `_Amends` history, so clearing it is not recoverable)
 
 Functions ending in `_` are private (Apps Script hides nothing, but the
 convention is enforced by review, not the runtime) and are never exposed to
@@ -124,6 +125,26 @@ touch (one HTTP call) -> `requirePermissions_()` -> capability check
 (`assertCanEditHighLevelId_` / `assertCanEditModellingId_`) -> validate ->
 `withLock_()` -> write -> `recordChange_()` -> return. Follow this shape for
 new write functions rather than inventing a new order.
+
+**The one write that is not scoped: actuals import.** `uploadActualsCsv()` in
+`actuals.js` reads one file and writes across every segment in it, and in
+REPLACE mode empties `Actuals_Import` first with no history to recover from.
+Every other write gate narrows to rows the person is scoped to; this one cannot.
+So it is gated by `requireImportActuals_()` in `auth.js`, which admits exactly
+the set `requireMaintenance_()` admits — a role with `All_Access`, or one with
+`Can_Manage_Users` — and deliberately **not** `write`. The manual route
+(`runActualsImport()` from the Apps Script editor) already required project edit
+access, so the button grants no new authority to anyone; putting it behind
+`write` would hand it to every MODELLER and ANALYST, which is a change of
+authority disguised as a change of interface. If a dedicated
+`Can_Import_Actuals` column is ever added to `Portal_Roles`,
+`requireImportActuals_()` is the one line that changes. The client mirrors it in
+`canImportActuals()` in `index.html` — change both together.
+
+Scope still applies underneath: `saveActual()` checks every row against
+`Scope_Mapping`, so an importer without `All_Access` gets rows refused rather
+than written. Those refusals come back in the report's `writeErrors`, which is
+why in practice this should be held by `All_Access` roles only.
 
 ### The calculation engine is pure
 

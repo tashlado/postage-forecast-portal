@@ -2295,16 +2295,364 @@ function outputTable(){
   return h;
 }
 
+/* ===================================================================
+   Output — the published forecast
+
+   Two views of the same rows. "All rows" is the OUTPUT sheet as it stands, one
+   row per segment-month, sortable and filterable; "By month" is the pivot that
+   was here before, which shows movement month to month in a way the flat form
+   cannot. Neither is a subset of the other, so both stay.
+
+   Preview changes and Publish live in the header (renderHeaderActions) and render
+   into #oResult, which is why that div is on this tab whichever view is showing.
+   =================================================================== */
+
+/**
+ * The eight columns, in the order the legacy workbook's Output tab used them.
+ *
+ * Total Postage is the legacy workbook's own name for this figure, and it is the
+ * figure runParityTest compares against: engine.gs sums
+ * rate x methodMix x lpMix over every route in a segment, where
+ * rate = base x (1 + sum of percentage surcharges) + sum of amount surcharges.
+ * "Total" there means totalled across cost components and mix — it is a blended
+ * cost per order, NOT multiplied by any volume, because the model carries no
+ * order volumes at all. The tooltip on the header says so, because the name alone
+ * invites the other reading.
+ */
+var OUTPUT_COLS = [
+  { key:'hlId',          label:'High Level ID',  type:'num', filter:'pick' },
+  { key:'dateId',        label:'Date ID',        type:'num', filter:'pick' },
+  { key:'brand',         label:'Brand',          type:'str', filter:'pick' },
+  { key:'geo',           label:'Geo',            type:'str', filter:'pick' },
+  { key:'treatmentType', label:'Treatment Type', type:'str', filter:'pick' },
+  { key:'wlSplit',       label:'WL Split',       type:'str', filter:'pick' },
+  { key:'monthStart',    label:'Date',           type:'str', filter:'pick' },
+  { key:'rate',          label:'Total Postage',  type:'num', filter:'range',
+    hint:'Blended postage cost per order for the segment that month: base rate '+
+         'plus surcharges, weighted by method and letter/parcel mix, summed across '+
+         'every route. Not multiplied by order volume — the model holds none.' }
+];
+
+/* Rendering every row is fine at the current 649 and stays fine into the low
+   thousands; past this it renders the first N and says so rather than quietly
+   showing a subset. CSV always exports everything that matched. */
+var OUTPUT_RENDER_CAP = 2000;
+
+/** OUTPUT as flat rows, with the dimensions the published rows carry. */
+function outputAllRows(){
+  return (S.output||[]).map(function(r){
+    /* Fall back to the current segment record only where a published row predates
+       the loader sending its own copies. */
+    var h=S.hlIds.filter(function(x){return x.id===r.hlId;})[0]||{};
+    return { hlId:r.hlId, dateId:r.dateId,
+             brand:r.brand||h.brand||'', geo:r.geo||h.geo||'',
+             treatmentType:r.treatmentType||h.treatmentType||'',
+             wlSplit:r.wlSplit||h.wlSplit||'',
+             monthStart:r.monthStart||'', rate:r.rate };
+  });
+}
+
+function outputFilters(){ return (S.sel.outFilters = S.sel.outFilters || {}); }
+
+/** Filter, then sort. Both run over the in-memory array — no server call. */
+function outputVisibleRows(){
+  var f=outputFilters();
+  var rows=outputAllRows().filter(function(r){
+    for(var i=0;i<OUTPUT_COLS.length;i++){
+      var c=OUTPUT_COLS[i], want=f[c.key];
+      if(c.filter==='range'){
+        if(want && want.min!=='' && want.min!==undefined && Number(r[c.key])<Number(want.min)) return false;
+        if(want && want.max!=='' && want.max!==undefined && Number(r[c.key])>Number(want.max)) return false;
+      } else if(want!==undefined && want!==''){
+        if(String(r[c.key])!==String(want)) return false;
+      }
+    }
+    return true;
+  });
+
+  var s=S.sel.outSort;
+  if(s && s.key){
+    var col=OUTPUT_COLS.filter(function(c){return c.key===s.key;})[0];
+    var dir=s.dir==='desc'?-1:1;
+    rows.sort(function(a,b){
+      var x=a[s.key], y=b[s.key];
+      if(col && col.type==='num'){ x=Number(x)||0; y=Number(y)||0; return (x-y)*dir; }
+      x=String(x); y=String(y);
+      return (x<y?-1:x>y?1:0)*dir;
+    });
+  }
+  return rows;
+}
+
+/** Distinct values for a pick filter, narrowed by the other columns' filters. */
+function outputPickValues(key){
+  var f=outputFilters(), seen={};
+  outputAllRows().forEach(function(r){
+    for(var i=0;i<OUTPUT_COLS.length;i++){
+      var c=OUTPUT_COLS[i];
+      if(c.key===key || c.filter==='range') continue;
+      var want=f[c.key];
+      if(want!==undefined && want!=='' && String(r[c.key])!==String(want)) return;
+    }
+    seen[r[key]]=1;
+  });
+  var col=OUTPUT_COLS.filter(function(c){return c.key===key;})[0];
+  return Object.keys(seen).sort(function(a,b){
+    return (col&&col.type==='num') ? (Number(a)-Number(b)) : (a<b?-1:a>b?1:0);
+  });
+}
+
 function viewOutput(){
   if(!S.loaded) return '<div class="card"><div class="body">'+loading()+'</div></div>';
-  /* Preview changes and Publish live in the header now — see renderHeaderActions.
-     What stays here is where their answer lands. */
-  var h='<div id="oResult"></div>';
-  h+='<div class="card"><h2>OUTPUT — forecast rate per order</h2><div class="body" style="padding:0">'+
-     outputTable()+'</div></div>';
+  var sec=S.sel.outputSection||'rows';
+  var tabs=[['rows','All rows'],['pivot','By month']];
+  var h='<div class="card"><div class="body" style="padding:10px 12px">';
+  h+='<div style="display:flex;gap:2px">'+tabs.map(function(t){
+     return '<button class="btn sm'+(sec===t[0]?' primary':'')+'" data-os="'+t[0]+'">'+
+            t[1]+'</button>'; }).join('')+'</div></div></div>';
+
+  /* Preview changes and Publish render here, from the header. */
+  h+='<div id="oResult"></div>';
+
+  if(sec==='pivot'){
+    h+='<div class="card"><h2>OUTPUT — forecast rate per order</h2>'+
+       '<div class="body" style="padding:0">'+outputTable()+'</div></div>';
+    return h;
+  }
+  h+=outputRowsView();
   return h;
 }
-function wireOutput(){ /* nothing to wire: the actions are in the header */ }
+
+function outputRowsView(){
+  var all=outputAllRows();
+  if(!all.length){
+    return '<div class="card"><h2>OUTPUT</h2><div class="body">'+
+           '<div class="empty">Nothing published yet.</div></div></div>';
+  }
+  var f=outputFilters();
+  var rows=outputVisibleRows();
+  var s=S.sel.outSort||{};
+  var active=OUTPUT_COLS.filter(function(c){
+    var w=f[c.key];
+    return c.filter==='range' ? (w && ((w.min!==''&&w.min!==undefined)||(w.max!==''&&w.max!==undefined)))
+                              : (w!==undefined && w!=='');
+  }).length;
+
+  var h='<div class="card"><h2>OUTPUT — all rows'+
+        '<span class="small muted" style="font-weight:400"> — the published forecast, one row per segment per month</span>'+
+        '</h2>';
+  h+='<div class="body" style="padding:10px 16px;border-bottom:1px solid var(--line);'+
+     'display:flex;gap:12px;align-items:center;flex-wrap:wrap">';
+  h+='<span class="small"><strong>'+rows.length+'</strong> of '+all.length+' row'+
+     (all.length===1?'':'s')+(active?' · '+active+' filter'+(active===1?'':'s')+' on':'')+'</span>';
+  h+='<button class="btn sm primary" id="oCsv">Download CSV</button>';
+  h+='<button class="btn sm" id="oCopy" title="If the download is blocked, this puts the '+
+     'same CSV on your clipboard">Copy</button>';
+  if(active) h+='<button class="btn sm" id="oClear">Clear filters</button>';
+  h+='<span class="small muted">Click a heading to sort. The CSV is whatever is showing.</span>';
+  h+='</div>';
+
+  h+='<div class="body" style="padding:0"><div style="overflow-x:auto">';
+  h+='<table class="otab"><thead><tr>';
+  OUTPUT_COLS.forEach(function(c){
+    var arrow = s.key===c.key ? (s.dir==='desc'?' ▾':' ▴') : '';
+    h+='<th class="sortable'+(c.type==='num'?' right':'')+(s.key===c.key?' sorted':'')+
+       '" data-sort="'+c.key+'"'+(c.hint?' title="'+esc(c.hint)+'"':'')+'>'+
+       esc(c.label)+arrow+'</th>';
+  });
+  h+='</tr><tr class="frow">';
+  OUTPUT_COLS.forEach(function(c){
+    if(c.filter==='range'){
+      var w=f[c.key]||{};
+      h+='<td><div style="display:flex;gap:3px">'+
+         '<input class="fmin" data-fmin="'+c.key+'" type="number" step="0.0001" placeholder="min" '+
+         'value="'+esc(w.min===undefined?'':w.min)+'">'+
+         '<input class="fmin" data-fmax="'+c.key+'" type="number" step="0.0001" placeholder="max" '+
+         'value="'+esc(w.max===undefined?'':w.max)+'"></div></td>';
+    } else {
+      var vals=outputPickValues(c.key), cur=f[c.key]===undefined?'':f[c.key];
+      h+='<td><select data-fpick="'+c.key+'"><option value="">All</option>'+
+         vals.map(function(v){
+           return '<option value="'+esc(v)+'"'+(String(v)===String(cur)?' selected':'')+'>'+
+                  esc(v)+'</option>'; }).join('')+'</select></td>';
+    }
+  });
+  h+='</tr></thead><tbody id="oBody">'+outputTbody(rows)+'</tbody></table>';
+  h+='</div></div></div>';
+  return h;
+}
+
+/** Only this is re-rendered on a sort or filter change, never the whole screen. */
+function outputTbody(rows){
+  if(!rows.length){
+    return '<tr><td colspan="'+OUTPUT_COLS.length+'" class="empty">'+
+           'No rows match those filters.</td></tr>';
+  }
+  var shown=rows.slice(0, OUTPUT_RENDER_CAP), h='';
+  shown.forEach(function(r){
+    h+='<tr>';
+    OUTPUT_COLS.forEach(function(c){
+      var v = c.key==='rate' ? money(r.rate) : r[c.key];
+      h+='<td class="small'+(c.type==='num'?' right num':'')+'">'+esc(v)+'</td>';
+    });
+    h+='</tr>';
+  });
+  if(rows.length>shown.length){
+    h+='<tr><td colspan="'+OUTPUT_COLS.length+'" class="small muted" style="padding:8px 12px">'+
+       'Showing the first '+shown.length+' of '+rows.length+' matching rows. '+
+       'Download CSV gives you all '+rows.length+'.</td></tr>';
+  }
+  return h;
+}
+
+/**
+ * Re-render the rows and the sort arrows, and nothing else.
+ *
+ * Sorting cannot change which rows match or what the filter dropdowns offer, so it
+ * takes this path instead of renderAll — which would replace the whole screen
+ * (finding P13), rebuild every filter control and throw away your scroll position
+ * on every heading click. Filtering does change those, so it does go through
+ * renderAll.
+ */
+function refreshOutputBody(){
+  var b=document.getElementById('oBody');
+  if(!b) return;
+  b.innerHTML=outputTbody(outputVisibleRows());
+  var s=S.sel.outSort||{};
+  Array.prototype.forEach.call(document.querySelectorAll('[data-sort]'),function(th){
+    var key=th.getAttribute('data-sort');
+    var col=OUTPUT_COLS.filter(function(c){return c.key===key;})[0]||{};
+    th.className='sortable'+(col.type==='num'?' right':'')+(s.key===key?' sorted':'');
+    th.textContent=col.label+(s.key===key?(s.dir==='desc'?' ▾':' ▴'):'');
+  });
+}
+
+function wireOutput(){
+  Array.prototype.forEach.call(document.querySelectorAll('[data-os]'),function(b){
+    b.onclick=function(){ S.sel.outputSection=b.getAttribute('data-os'); renderAll(); };
+  });
+  if((S.sel.outputSection||'rows')!=='rows') return;
+
+  Array.prototype.forEach.call(document.querySelectorAll('[data-sort]'),function(th){
+    th.onclick=function(){
+      var key=th.getAttribute('data-sort'), s=S.sel.outSort||{};
+      S.sel.outSort = (s.key===key && s.dir==='asc') ? {key:key,dir:'desc'} : {key:key,dir:'asc'};
+      refreshOutputBody();
+    };
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('[data-fpick]'),function(sel){
+    sel.onchange=function(){
+      outputFilters()[sel.getAttribute('data-fpick')]=sel.value;
+      renderAll();
+    };
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('[data-fmin]'),function(inp){
+    inp.onchange=function(){
+      var k=inp.getAttribute('data-fmin'), f=outputFilters();
+      f[k]=f[k]||{}; f[k].min=inp.value; renderAll();
+    };
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('[data-fmax]'),function(inp){
+    inp.onchange=function(){
+      var k=inp.getAttribute('data-fmax'), f=outputFilters();
+      f[k]=f[k]||{}; f[k].max=inp.value; renderAll();
+    };
+  });
+  var clr=document.getElementById('oClear');
+  if(clr) clr.onclick=function(){ S.sel.outFilters={}; renderAll(); };
+
+  var csv=document.getElementById('oCsv');
+  if(csv) csv.onclick=function(){
+    var rows=outputVisibleRows();
+    if(!rows.length){ showError('Nothing to export — no rows match those filters.'); return; }
+    downloadCsv(outputCsvName(rows.length), outputCsv(rows));
+  };
+  var cp=document.getElementById('oCopy');
+  if(cp) cp.onclick=function(){
+    var rows=outputVisibleRows();
+    if(!rows.length){ showError('Nothing to copy — no rows match those filters.'); return; }
+    copyCsv(outputCsv(rows), rows.length);
+  };
+}
+
+function outputCsvName(n){
+  var f=outputFilters(), bits=['output'];
+  ['brand','geo','treatmentType','wlSplit'].forEach(function(k){
+    if(f[k]) bits.push(String(f[k]).toLowerCase());
+  });
+  bits.push(n+'rows');
+  return bits.join('-').replace(/[^a-z0-9-]/gi,'')+'.csv';
+}
+
+/** Built from the filtered, sorted array — so it always matches what is on screen,
+    including the rows a render cap left off. */
+function outputCsv(rows){
+  var lines=[OUTPUT_COLS.map(function(c){return csvCell(c.label);}).join(',')];
+  rows.forEach(function(r){
+    lines.push(OUTPUT_COLS.map(function(c){
+      return csvCell(c.key==='rate' ? money(r.rate) : r[c.key]);
+    }).join(','));
+  });
+  return lines.join('\r\n');
+}
+
+function csvCell(v){
+  var s=(v===null||v===undefined)?'':String(v);
+  return /[",\r\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s;
+}
+
+/**
+ * Hand the browser a file.
+ *
+ * The portal runs inside an Apps Script iframe, and whether that sandbox permits a
+ * download the page starts itself is not something this code can find out — a
+ * blocked click fails silently rather than throwing. Hence the Copy button beside
+ * it: if nothing lands in your downloads, the same CSV is one click from the
+ * clipboard.
+ */
+function downloadCsv(name, text){
+  try{
+    /* A BOM, so Excel opens a UTF-8 CSV without mangling accented names. */
+    var blob=new Blob([String.fromCharCode(0xFEFF)+text],{type:'text/csv;charset=utf-8;'});
+    var url=URL.createObjectURL(blob);
+    var a=document.createElement('a');
+    a.href=url; a.download=name; a.style.display='none';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function(){ URL.revokeObjectURL(url); if(a.parentNode) a.parentNode.removeChild(a); },0);
+    showOk('Exported '+name+'. If nothing appeared in your downloads, the iframe '+
+           'blocked it — use Copy instead.');
+  }catch(e){
+    showCsvFallback(text);
+  }
+}
+
+function copyCsv(text, n){
+  function ok(){ showOk(n+' row(s) copied as CSV. Paste into a spreadsheet.'); }
+  try{
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(ok, function(){ showCsvFallback(text); });
+      return;
+    }
+  }catch(e){}
+  showCsvFallback(text);
+}
+
+/** Last resort: put it on screen so it can always be got out by hand. */
+function showCsvFallback(text){
+  openForm({
+    title:'CSV',
+    intro:'Copying was blocked, so here it is. Select all and copy.',
+    body:'<textarea readonly rows="12" style="width:100%;font-family:ui-monospace,monospace;'+
+         'font-size:11px">'+esc(text)+'</textarea>',
+    saveLabel:null,
+    fields:[],
+    afterRender:function(root){
+      var ta=root.querySelector('textarea');
+      if(ta){ ta.focus(); ta.select(); }
+    }
+  });
+}
 
 function runPreviewOutput(){
   var el=outputResultEl();
@@ -2893,20 +3241,318 @@ function reloadInit(){
    =================================================================== */
 var cmp=null;
 
+/* Mirrors requireImportActuals_ in auth.gs. Kept as its own function rather than
+   an inline can('manageUsers') so that when the server gate changes, the grep for
+   "importActuals" finds the client too — a button that renders and then throws on
+   click is worse than no button. */
+function canImportActuals(){ return can('manageUsers'); }
+
+/* The last upload's report, held here rather than only in the DOM.
+   A successful import calls reloadData(), which calls renderAll(), which rebuilds
+   the whole screen — so a report written straight into the page would disappear
+   about a second after appearing. Since the report is the only review step this
+   feature has, losing it is the exact failure the feature exists to prevent. It
+   is kept until dismissed or the page is reloaded, the same way cmp and snapDiff
+   are held. */
+var acReport=null, acReportFile='';
+
 function viewActuals(){
   if(!S.loaded) return '<div class="card"><div class="body">'+loading()+'</div></div>';
   var h='<div class="card"><div class="body"><div class="row" style="margin:0">';
   if(can('write')) h+='<button class="btn primary" id="aAdd">Add or update a month</button>';
   h+='<span class="small muted" style="align-self:center">Blended rate is derived as '+
      'spend divided by orders where both are given.</span>';
-  h+='</div></div></div><div id="aHost">'+loading()+'</div>';
+  h+='</div></div></div>';
+  if(canImportActuals()) h+=viewActualsUpload();
+  h+='<div id="aHost">'+loading()+'</div>';
+  return h;
+}
+
+function viewActualsUpload(){
+  var h='<div class="card"><h2>Upload the monthly extract</h2><div class="body">';
+  h+='<div class="small muted" style="margin-top:0">Upload the monthly postage extract '+
+     'as a CSV. It needs the columns the extract already has — Country Code, Brand, '+
+     'Delivery Carrier, Delivery Method, Treatment Type, Dispatched Date: Month, Count '+
+     'and Sum of Cost Of Shipping. Order does not matter and extra columns are '+
+     'ignored.</div>';
+  h+='<div class="row" style="margin:12px 0 0;align-items:center">';
+  h+='<input type="file" id="acFile" accept=".csv,text/csv" '+
+     'style="font-size:12px;max-width:340px">';
+  h+='<button class="btn primary" id="acAppend">Add this month</button>';
+  h+='<button class="btn danger" id="acReplace">Replace all actuals data</button>';
+  h+='</div>';
+  h+='<div class="small muted" style="margin-top:10px">'+
+     '<strong style="color:var(--ink)">Add this month</strong> stages the file alongside '+
+     'what is already there. Any month the file covers is cleared from the staging tab '+
+     'first, so uploading the same month twice corrects it rather than doubling it.<br>'+
+     '<strong style="color:var(--ink)">Replace all actuals data</strong> empties the '+
+     'staging tab and loads only this file. The staging tab has no history, so that '+
+     'cannot be undone.<br>'+
+     'There is no preview step — the import runs on upload and reports back below. '+
+     'Read the report: it is the only thing that will tell you a treatment type went '+
+     'to Core Rx by default, or that a segment has no High Level ID.</div>';
+  h+='<div id="acReport"></div>';
+  h+='</div></div>';
   return h;
 }
 
 function wireActuals(){
   var a=document.getElementById('aAdd');
   if(a) a.onclick=function(){ editActual(null); };
+  wireActualsUpload();
   loadComparison();
+}
+
+function wireActualsUpload(){
+  var ap=document.getElementById('acAppend'), rp=document.getElementById('acReplace');
+  if(ap) ap.onclick=function(){ startActualsUpload('APPEND'); };
+  if(rp) rp.onclick=function(){ startActualsUpload('REPLACE'); };
+  if(acReport) paintActualsUploadReport();      // survive the renderAll after an import
+}
+
+/* Read the file in the browser and send the text, rather than parsing to rows
+   here. The parse has to happen server-side regardless — the client cannot be
+   trusted with it, and the same CSV arriving from a future automated feed would
+   need the same code — so parsing here as well would mean two parsers to keep in
+   agreement about quoted commas. One string over google.script.run, one parser. */
+function startActualsUpload(mode){
+  var inp=document.getElementById('acFile');
+  var f=inp && inp.files && inp.files[0];
+  if(!f){ return showError('Choose a CSV file first.'); }
+  if(!/\.csv$/i.test(f.name) && f.type && f.type.indexOf('csv')<0){
+    return showError('"'+f.name+'" does not look like a CSV. Export the extract as CSV '+
+                     'rather than as a workbook — an .xlsx cannot be read here.');
+  }
+  if(!f.size){ return showError('"'+f.name+'" is empty.'); }
+
+  /* Drop the previous report before starting. Otherwise a failed upload clears
+     the report from the page but leaves it in acReport, and the next renderAll
+     paints last week's summary back in as though it described this attempt. */
+  acReport=null; acReportFile='';
+
+  if(mode==='REPLACE'){
+    if(!confirm('Replace all staged actuals data?\n\nThis empties the Actuals_Import tab '+
+                'completely and loads only "'+f.name+'". The staging tab has no history, '+
+                'so this cannot be undone.\n\nThe months this file does not cover will no '+
+                'longer be staged.')) return;
+  }
+
+  var host=document.getElementById('acReport');
+  if(host) host.innerHTML='<div class="small muted" style="margin-top:14px">Reading '+
+    esc(f.name)+'…</div>';
+
+  var fr=new FileReader();
+  fr.onerror=function(){
+    if(host) host.innerHTML='';
+    showError('That file could not be read from disk.');
+  };
+  fr.onload=function(){
+    var text=String(fr.result||'');
+    if(!text.trim()){
+      if(host) host.innerHTML='';
+      return showError('"'+f.name+'" has no content in it.');
+    }
+    if(host) host.innerHTML='<div class="small muted" style="margin-top:14px">Importing '+
+      esc(f.name)+'… this can take a minute for a full month.</div>';
+    call('uploadActualsCsv',[text,mode],function(rep){
+      renderActualsUploadReport(rep,f.name);
+      showOk('Imported '+f.name+' — '+(rep.written||0)+' actual row(s) written. '+
+             'Read the report below.');
+      if(inp) inp.value='';
+      loadComparison(); reloadData();
+    },function(msg){
+      if(host) host.innerHTML='';
+      showError(msg);
+    });
+  };
+  fr.readAsText(f);
+}
+
+function renderActualsUploadReport(rep,fileName){
+  acReport=rep; acReportFile=fileName;
+  paintActualsUploadReport();
+}
+
+/* The whole point of the feature. Everything below is informational and nothing
+   blocks, but each block exists because it names a failure that has actually
+   happened and that no other screen would show. */
+function paintActualsUploadReport(){
+  var host=document.getElementById('acReport');
+  if(!host) return;
+  var rep=acReport, fileName=acReportFile;
+  if(!rep){ host.innerHTML=''; return; }
+  if(rep.ok===false){
+    host.innerHTML='<div class="err-box" style="margin-top:14px">Nothing was imported'+
+      (rep.reason?' ('+esc(rep.reason)+')':'')+'.</div>';
+    return;
+  }
+  var n=function(v){ return Math.round(Number(v)||0).toLocaleString(); };
+  var h='<div style="margin-top:16px;border-top:1px solid var(--line);padding-top:14px">';
+  h+='<div class="row" style="margin:0 0 10px;align-items:baseline">'+
+     '<strong>'+esc(fileName)+'</strong>'+
+     '<span class="pill">'+esc(rep.mode||'')+'</span>'+
+     '<button class="btn sm" id="acDismiss" style="margin-left:auto">Dismiss</button></div>';
+
+  /* ---- what happened, in numbers ---- */
+  h+='<div style="display:flex;gap:26px;flex-wrap:wrap;margin-bottom:6px">';
+  h+='<div><div class="small muted">Rows in file</div><div class="num" '+
+     'style="font-size:20px">'+n(rep.fileRows)+'</div></div>';
+  h+='<div><div class="small muted">Staged</div><div class="num" '+
+     'style="font-size:20px">'+n(rep.stagedRows)+'</div></div>';
+  h+='<div><div class="small muted">Actual rows written</div><div class="num" '+
+     'style="font-size:20px">'+n(rep.written)+'</div></div>';
+  h+='<div><div class="small muted">Segment-months</div><div class="num" '+
+     'style="font-size:20px">'+n(rep.segmentMonths)+'</div></div>';
+  h+='</div>';
+  h+='<div class="small muted">Months in the file: '+
+     esc((rep.monthsInFile||[]).join(', ')||'—')+'</div>';
+
+  /* ---- old rows that were cleared, so it is visible they were not stacked ---- */
+  if(rep.mode==='REPLACE'){
+    h+='<div class="small" style="margin-top:10px">'+
+       '<span class="sev WARN">replaced</span> The staging tab was emptied first — '+
+       n(rep.stagingRowsRemoved)+' row(s) removed. Only this file is staged now.</div>';
+  } else if((rep.replacedMonths||[]).length){
+    h+='<div class="small" style="margin-top:10px">'+
+       '<span class="sev WARN">replaced</span> These months were already staged, so the '+
+       'old rows were removed before this file was added rather than summed with it: '+
+       esc(rep.replacedMonths.map(function(m){
+         return m.month+' ('+n(m.rowsRemoved)+' rows)'; }).join(', '))+'.</div>';
+  } else {
+    h+='<div class="small muted" style="margin-top:10px">No month in this file was '+
+       'already staged, so nothing was removed.</div>';
+  }
+
+  /* ---- treatment types that defaulted, with the money ---- */
+  if((rep.defaultedTreatments||[]).length){
+    h+='<div class="card" style="margin-top:14px"><h2>'+
+       '<span class="sev WARN">check</span> '+rep.defaultedValues+
+       ' treatment value(s) went to Core Rx by default</h2><div class="body" style="padding:0">';
+    h+='<div class="small muted" style="padding:10px 12px">'+n(rep.defaultedRows)+
+       ' row(s), £'+(Number(rep.defaultedCost)||0).toFixed(2)+'. These matched nothing '+
+       'in the ACTUALS_WL_TREATMENTS config, which is correct for a genuine Core Rx '+
+       'condition and wrong for a weight-loss one — and nothing in the sheet says '+
+       'which is which. A weight-loss value landing here moves both the volume and the '+
+       'blended rate of the Core Rx segment for that brand and country.</div>';
+    h+='<table><thead><tr><th>Treatment type</th><th class="right">Rows</th>'+
+       '<th class="right">Shipments</th><th class="right">Cost</th>'+
+       '<th class="right">Per shipment</th></tr></thead><tbody>';
+    rep.defaultedTreatments.forEach(function(d){
+      h+='<tr><td class="small">'+esc(d.treatment)+'</td>'+
+         '<td class="right num">'+n(d.rows)+'</td>'+
+         '<td class="right num">'+n(d.ship)+'</td>'+
+         '<td class="right num">£'+(Number(d.cost)||0).toFixed(2)+'</td>'+
+         '<td class="right num">£'+(d.ship?(d.cost/d.ship).toFixed(3):'0.000')+'</td></tr>';
+    });
+    h+='</tbody></table>';
+    h+='<div class="small muted" style="padding:8px 12px">Add any weight-loss value to '+
+       'Config ACTUALS_WL_TREATMENTS and upload again — re-uploading the same month '+
+       'corrects it rather than doubling it.</div>';
+    h+='</div></div>';
+  }
+
+  /* ---- segments with no High Level ID ---- */
+  if((rep.unmatchedSegments||[]).length){
+    h+='<div class="card" style="margin-top:14px"><h2>'+
+       '<span class="sev WARN">not loaded</span> '+rep.unmatched+
+       ' segment(s) have no matching High Level ID</h2><div class="body" style="padding:0">';
+    h+='<div class="small muted" style="padding:10px 12px">These rows were read and then '+
+       'left out, because there is no active High Level ID for that brand, country and '+
+       'treatment. They are missing from the comparison entirely — not counted as '+
+       'zero.</div>';
+    h+='<table><thead><tr><th>Brand</th><th>Location</th><th>Treatment</th>'+
+       '<th class="right">Shipments</th><th class="right">Cost</th></tr></thead><tbody>';
+    rep.unmatchedSegments.forEach(function(u){
+      h+='<tr><td class="small">'+esc(u.brand)+'</td><td class="small">'+esc(u.geo)+'</td>'+
+         '<td class="small">'+esc(u.treat)+'</td>'+
+         '<td class="right num">'+n(u.ship)+'</td>'+
+         '<td class="right num">£'+(Number(u.cost)||0).toFixed(2)+'</td></tr>';
+    });
+    h+='</tbody></table>';
+    h+='<div class="small muted" style="padding:8px 12px">Add a High Level ID on the '+
+       'Structure tab if these should be forecast.</div></div></div>';
+  }
+
+  /* ---- shipments that arrived with no money ---- */
+  if((rep.zeroCost||[]).length){
+    h+='<div class="card" style="margin-top:14px"><h2>'+
+       '<span class="sev WARN">no cost</span> '+n(rep.zeroCostRows)+
+       ' row(s) had shipments but a cost of 0</h2><div class="body" style="padding:0">';
+    h+='<div class="small muted" style="padding:10px 12px">'+n(rep.zeroCostShipments)+
+       ' shipments. These still count towards the blended rate as a divisor with nothing '+
+       'on top, so they pull the measured rate below the truth. A genuine zero and a cost '+
+       'column that did not parse look identical here — check the file if a segment '+
+       'below is one you would expect to be paying for.</div>';
+    h+='<table><thead><tr><th>Brand</th><th>Location</th><th>Treatment</th><th>Month</th>'+
+       '<th class="right">Rows</th><th class="right">Shipments</th></tr></thead><tbody>';
+    rep.zeroCost.forEach(function(z){
+      h+='<tr><td class="small">'+esc(z.brand)+'</td><td class="small">'+esc(z.geo)+'</td>'+
+         '<td class="small">'+esc(z.treat)+'</td><td class="num">'+esc(z.month)+'</td>'+
+         '<td class="right num">'+n(z.rows)+'</td>'+
+         '<td class="right num">'+n(z.ship)+'</td></tr>';
+    });
+    h+='</tbody></table></div></div>';
+  }
+
+  /* ---- rows that never made it as far as a segment ---- */
+  if((rep.skipReasons||[]).length){
+    h+='<div class="small" style="margin-top:14px"><strong>'+n(rep.rowsSkipped)+
+       ' row(s) skipped.</strong> <span class="muted">';
+    h+=rep.skipReasons.map(function(s){
+      return n(s.rows)+' — '+esc(s.reason)+' (e.g. sheet row '+
+             s.examples.join(', ')+')'; }).join('; ');
+    h+='. Trailing blank rows are normal; a month that could not be read is not.</span></div>';
+  }
+
+  /* ---- rows the write path itself refused ---- */
+  if((rep.writeErrors||[]).length){
+    h+='<div class="err-box" style="margin-top:14px"><strong>'+n(rep.writeSkipped)+
+       ' row(s) could not be written.</strong> Usually a scope refusal — the import '+
+       'covers every segment, and each row is still checked against your scope, so those '+
+       'segments are missing from the comparison.<br>'+
+       esc(rep.writeErrors.join(' • '))+'</div>';
+  }
+
+  /* ---- months outside the horizon ---- */
+  if((rep.outsideHorizon||[]).length){
+    var os=0; rep.outsideHorizon.forEach(function(o){ os+=Number(o.ship)||0; });
+    h+='<div class="small muted" style="margin-top:12px">'+rep.outsideHorizon.length+
+       ' month(s) in the file are outside the forecast horizon and were ignored ('+
+       esc(rep.outsideHorizon.map(function(o){return o.month;}).join(', '))+', '+
+       n(os)+' shipments).</div>';
+  }
+
+  /* ---- headers that were guessed rather than matched ---- */
+  var fuzzy=(rep.columnsMatched||[]).filter(function(c){ return c.mode==='fuzzy'; });
+  if(fuzzy.length){
+    h+='<div class="small" style="margin-top:12px"><span class="sev WARN">headers</span> '+
+       esc(fuzzy.map(function(c){ return c.label+' → "'+c.header+'"'; }).join(', '))+
+       ' <span class="muted">matched on a partial name rather than exactly. If the numbers '+
+       'above look wrong, this is the first thing to check.</span></div>';
+  }
+  if((rep.columnsMissing||[]).length){
+    h+='<div class="small muted" style="margin-top:8px">Not in this file, left blank: '+
+       esc(rep.columnsMissing.join(', '))+'. The import aggregates these away, so it does '+
+       'not affect the result.</div>';
+  }
+  if((rep.unreadableMonths||[]).length){
+    h+='<div class="small muted" style="margin-top:8px">Month values that could not be '+
+       'read: '+esc(rep.unreadableMonths.join(', '))+'.</div>';
+  }
+
+  /* ---- and say so plainly when there is nothing to say ---- */
+  if(!(rep.defaultedTreatments||[]).length && !(rep.unmatchedSegments||[]).length &&
+     !(rep.zeroCost||[]).length && !(rep.writeErrors||[]).length){
+    h+='<div class="ok-box" style="margin-top:14px">Nothing to flag. Every treatment type '+
+       'was recognised, every segment matched a High Level ID, and every row with '+
+       'shipments carried a cost.</div>';
+  }
+
+  h+='</div>';
+  host.innerHTML=h;
+
+  var d=document.getElementById('acDismiss');
+  if(d) d.onclick=function(){ acReport=null; acReportFile=''; host.innerHTML=''; };
 }
 
 function loadComparison(){
