@@ -254,3 +254,38 @@ both stay.
 Also: `compareRatesWithTestCopy()` and `previewRateCopyFromTestCopy()` need **both**
 spreadsheets to exist. Once the copy is binned there is no way to check the two ever
 matched. **Confirm parity before deleting, never after.**
+
+---
+
+## Parity confirmed, 2026-08-26 16:21 — and the false alarm it produced
+
+`compareRatesWithTestCopy()` on production against the test copy:
+
+| | THIS (production) | OTHER (test copy) | verdict |
+|---|---|---|---|
+| `Rate_Base` active rows | 286 | 286 | **0 only-in-other, 0 different, 0 only-in-this** |
+| `Rate_Surcharge` active rows | 1771 | 1771 | **0 / 0 / 0** |
+
+Rates are genuinely in sync. So are actuals — `Actuals` did not appear in the
+row-count list at all.
+
+**`Mix_Method` showed 374 here against 462 there, and it was a false alarm.**
+Forecast totals from `previewOutput()` were confirmed **identical** in both portals,
+so the 88 extra rows were inert. The cause: the row count included
+`Active = false` rows. Every write path in this codebase supersedes rather than
+overwrites — a bulk mix update deactivates the running period and writes a new one
+— so a tab that has simply been *edited* more often carries more rows while
+describing the same state. `Mix_Method_Amends` being +110 was the corroborating
+fingerprint, not a second problem.
+
+The comparison now counts **active** rows where a table has an `Active` column, and
+labels history tables (`*_Amends`, `Audit_Log`, `Calc_Runs`, `Validation_Results`,
+`Snapshot*`) as expected-to-differ rather than flagging them. Two live systems
+accumulate their own history; calling that a difference trains the reader to ignore
+the list.
+
+**The lesson worth keeping: row counts are a proxy on both sides.** Equal counts do
+not prove equal content, and unequal counts do not prove a real difference. The
+definitive check is `previewOutput()` in both, compared — that is the thing the rows
+exist to produce. `Permissions` differing (5 vs 2) is correct and must never be
+synced.

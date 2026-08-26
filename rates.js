@@ -2665,22 +2665,57 @@ function compareRatesWithOtherSpreadsheet(otherId) {
 
   // ---- everything else, by row count only, so other drift is visible ------
   Logger.log('');
-  Logger.log('════ every other tab, row counts only ════');
+  /* ACTIVE rows where the table has an Active column, total rows where it does
+     not — and the difference matters more than it sounds. Counting every row made
+     this raise a false alarm on Mix_Method (2026-08-26: 374 here, 462 there), and
+     the 88 extra were deactivated periods. Every write path here supersedes rather
+     than overwrites: a bulk mix update deactivates the running period and writes a
+     new one, so a tab that has simply been EDITED more often carries more rows
+     while describing the same state. Only the active set feeds the engine, so only
+     the active set is worth comparing. History tables — *_Amends, Audit_Log — are
+     expected to differ and are labelled so rather than flagged. */
+  Logger.log('════ every other tab: active rows where the table has an Active column ════');
   Logger.log('  ' + pad_('THIS', 8) + pad_('OTHER', 8) + '  tab');
   const drift = [];
+
+  function tabCount(ss, tableKey) {
+    const t = TABLES[tableKey];
+    const sh = ss.getSheetByName(t.sheet);
+    if (!sh) return -1;
+    const ai = t.headers.indexOf('Active');
+    if (ai < 0) return Math.max(sh.getLastRow() - 1, 0);   // no Active column
+    const d = sh.getDataRange().getValues();
+    let n = 0;
+    for (let i = 1; i < d.length; i++) if (safeBool(d[i][ai])) n++;
+    return n;
+  }
+
   Object.keys(TABLES).forEach(function (k) {
     const name = TABLES[k].sheet;
     if (name === 'Rate_Base' || name === 'Rate_Surcharge') return;
-    const a = thisSs.getSheetByName(name), b = otherSs.getSheetByName(name);
-    const an = a ? Math.max(a.getLastRow() - 1, 0) : -1;
-    const bn = b ? Math.max(b.getLastRow() - 1, 0) : -1;
-    if (an !== bn) {
-      drift.push({ tab: name, thisRows: an, otherRows: bn });
-      Logger.log('  ' + pad_(an < 0 ? 'none' : an, 8) + pad_(bn < 0 ? 'none' : bn, 8) +
-                 '  ' + name + '   <- differs');
-    }
+    const an = tabCount(thisSs, k), bn = tabCount(otherSs, k);
+    if (an === bn) return;
+    /* History and run logs accumulate independently in two live systems. Saying
+       "differs" about them trains the reader to ignore the whole list. */
+    const isHistory = /_Amends$|^Audit_Log$|^Calc_Runs$|^Validation_Results$|^Snapshot/.test(name);
+    drift.push({ tab: name, thisRows: an, otherRows: bn, history: isHistory });
+    Logger.log('  ' + pad_(an < 0 ? 'none' : an, 8) + pad_(bn < 0 ? 'none' : bn, 8) +
+               '  ' + name + (isHistory ? '   (history — expected to differ)' : '   <- differs'));
   });
-  if (!drift.length) Logger.log('  Every other tab has the same number of rows.');
+
+  const realDrift = drift.filter(function (d) { return !d.history; });
+  if (!drift.length) {
+    Logger.log('  Every other tab holds the same number of active rows.');
+  } else if (!realDrift.length) {
+    Logger.log('  Only history tables differ, which is expected of two live systems.');
+  } else {
+    Logger.log('');
+    Logger.log('  ' + realDrift.length + ' non-history tab(s) differ. Row counts are a proxy:');
+    Logger.log('  equal counts are not proof of equal content, and unequal counts are not');
+    Logger.log('  proof of a real difference either. The definitive check is to run');
+    Logger.log('  previewOutput() in both and compare the forecast totals — that is the');
+    Logger.log('  thing the rows exist to produce.');
+  }
 
   const totalOnlyThis = summary.reduce(function (a, s) {
     return a + (s.onlyInThis || 0); }, 0);
