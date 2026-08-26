@@ -2706,3 +2706,282 @@ function compareRatesWithOtherSpreadsheet(otherId) {
 
 /** Compare against the test copy named in utils.gs. */
 function compareRatesWithTestCopy() { return compareRatesWithOtherSpreadsheet(null); }
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MOVING RATE DATA FROM ANOTHER SPREADSHEET INTO THIS ONE
+//
+// The companion to compareRatesWithOtherSpreadsheet: it does the move that
+// comparison describes, and it does it through the same two functions the Rates
+// screen calls, so every row lands with a Rate_Base_Amends / Rate_Surcharge_Amends
+// entry and an Audit_Log line. A rate that appears with no history behind it is a
+// rate nobody can later explain.
+//
+// THE UNIT OF TRANSFER IS A ROUTE AND A CHARGE, NOT A ROW. For each
+// (Modelling_ID, charge code) whose active periods differ between the two sides,
+// this side's periods are deactivated and the other side's are written in their
+// place. Copying period-by-period cannot work: assertNoOverlap_ refuses a new
+// period that straddles an existing one, and a schedule that was three periods
+// here and four there has no row-to-row correspondence to patch. Replacing the
+// whole schedule for that route is the only operation that is well defined.
+//
+// WHAT IT WILL NOT DO. A route-and-charge that exists HERE and not in the source
+// is left completely alone, and reported. That is the asymmetry that keeps the
+// move safe: the source is a snapshot, so its silence about a route means "this
+// snapshot predates it", not "delete it". Making the two truly identical would
+// mean honouring that silence, and there is no way to tell a rate added here last
+// week from one the snapshot never had.
+//
+// It is IDEMPOTENT: a group whose periods already match is skipped. So a run that
+// hits the 6-minute ceiling can simply be run again, and will carry on from where
+// it stopped rather than redoing what it did.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const RATE_MOVE_SOURCE_REF = 'Copied from test portal';
+
+/** Group active rows by route and charge code: 'MID|CODE' -> [rows oldest first]. */
+function rateMoveGroups_(rowsByKey) {
+  const g = {};
+  Object.keys(rowsByKey).forEach(function (k) {
+    const r = rowsByKey[k];
+    const gk = r.mid + '|' + r.code;
+    (g[gk] = g[gk] || []).push(r);
+  });
+  Object.keys(g).forEach(function (gk) {
+    g[gk].sort(function (a, b) { return dateKey(a.from) - dateKey(b.from); });
+  });
+  return g;
+}
+
+/** Two schedules for one route: same periods, same money, same order? */
+function rateMoveGroupSame_(a, b) {
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].from !== b[i].from) return false;
+    if (!rateDiffSame_(a[i], b[i])) return false;
+  }
+  return true;
+}
+
+/**
+ * Copy rate schedules from another spreadsheet into this project's.
+ *
+ * @param {boolean} commit   false (default) logs the plan and writes nothing
+ * @param {string=} otherId  source; defaults to TEST_SPREADSHEET_ID
+ */
+function copyRatesFromOtherSpreadsheet(commit, otherId) {
+  requireMaintenance_();
+  const t0 = Date.now();
+  Logger.log(commit ? '=== COPYING RATE DATA IN (WRITING) ==='
+                    : '=== RATE DATA COPY — PREVIEW (nothing written) ===');
+
+  const perms = requirePermissions_();
+  requireEditRates_(perms);
+
+  const thisId = spreadsheetId_();
+  const wanted = safeStr(otherId) || safeStr(TEST_SPREADSHEET_ID);
+  if (!wanted || wanted === 'PASTE_THE_TEST_SPREADSHEET_ID_HERE') {
+    throw new Error('No source spreadsheet. Pass an ID, or set TEST_SPREADSHEET_ID.');
+  }
+  if (wanted === thisId) {
+    throw new Error('Source and destination are the same spreadsheet (' + thisId + ').');
+  }
+
+  let thisSs, otherSs;
+  try { thisSs = SpreadsheetApp.openById(thisId); }
+  catch (e) { throw new Error('Cannot open the destination ' + thisId + ': ' + e.message); }
+  try { otherSs = SpreadsheetApp.openById(wanted); }
+  catch (e) { throw new Error('Cannot open the source ' + wanted + ': ' + e.message); }
+
+  Logger.log('  FROM (source, read only) : ' + otherSs.getName() + '   ' + wanted);
+  Logger.log('  INTO (written to)        : ' + thisSs.getName() + '   ' + thisId);
+  Logger.log('  running as               : ' + perms.email + '  role ' + perms.role);
+  Logger.log('');
+  Logger.log('  Unit of transfer is one route + one charge: where the schedules differ,');
+  Logger.log('  this side\'s periods are deactivated and the source\'s written in their');
+  Logger.log('  place. A route-and-charge that exists only HERE is left alone.');
+
+  /* Which Modelling IDs the destination actually has. A rate for a route that does
+     not exist here cannot be written, and saying so is more useful than letting
+     saveBaseRate refuse it one row at a time. */
+  const destMids = {};
+  (function () {
+    const sh = thisSs.getSheetByName(SHEET.MODELLING_IDS);
+    if (!sh) return;
+    const d = sh.getDataRange().getValues(), M = COL.MODELLING_IDS;
+    for (let i = 1; i < d.length; i++) {
+      const id = safeInt(d[i][M.Modelling_ID]);
+      if (id) destMids[id] = safeBool(d[i][M.Active]);
+    }
+  })();
+
+  const plan = [], skipped = [], onlyHere = [];
+
+  rateDiffTables_().forEach(function (t) {
+    Logger.log('');
+    Logger.log('════ ' + t.label + ' ════');
+
+    const mineRows = rateDiffRows_(thisSs, t), theirRows = rateDiffRows_(otherSs, t);
+    if (!mineRows || !theirRows) {
+      Logger.log('  Tab missing on ' + (!mineRows ? 'the destination' : 'the source') +
+                 ' — skipped entirely.');
+      return;
+    }
+    const mine = rateMoveGroups_(mineRows), theirs = rateMoveGroups_(theirRows);
+
+    Object.keys(theirs).sort(function (a, b) {
+      return safeInt(a) - safeInt(b) || (a < b ? -1 : 1); }).forEach(function (gk) {
+      const src = theirs[gk], dst = mine[gk] || [];
+      const mid = src[0].mid, code = src[0].code;
+      const label = '  MID ' + pad_(mid, 4) + (code ? '  ' + pad_(code, 10) : '') + '  ';
+
+      if (rateMoveGroupSame_(dst, src)) return;            // already identical — silent
+
+      if (destMids[mid] === undefined) {
+        Logger.log(label + 'SKIPPED — no Modelling ID ' + mid + ' in the destination');
+        skipped.push({ table: t.label, mid: mid, code: code,
+                       reason: 'Modelling ID not in destination' });
+        return;
+      }
+      if (!destMids[mid]) {
+        Logger.log(label + 'SKIPPED — Modelling ID ' + mid + ' is inactive here');
+        skipped.push({ table: t.label, mid: mid, code: code, reason: 'route inactive here' });
+        return;
+      }
+      if (!canSeeModellingId_(perms, mid, true)) {
+        Logger.log(label + 'SKIPPED — outside what ' + perms.email + ' can edit');
+        skipped.push({ table: t.label, mid: mid, code: code, reason: 'outside editable scope' });
+        return;
+      }
+
+      Logger.log(label + dst.length + ' period(s) here -> ' + src.length + ' from source');
+      dst.forEach(function (r) { Logger.log('        was: ' + rateDiffLine_(r)); });
+      src.forEach(function (r) { Logger.log('        now: ' + rateDiffLine_(r)); });
+
+      plan.push({ table: t, mid: mid, code: code,
+                  deleteIds: dst.map(function (r) { return r.id; }),
+                  rows: src });
+    });
+
+    /* Groups the destination has and the source does not. Never touched. */
+    Object.keys(mine).forEach(function (gk) {
+      if (theirs[gk]) return;
+      const r = mine[gk][0];
+      onlyHere.push({ table: t.label, mid: r.mid, code: r.code, periods: mine[gk].length });
+    });
+  });
+
+  const deletes = plan.reduce(function (a, x) { return a + x.deleteIds.length; }, 0);
+  const creates = plan.reduce(function (a, x) { return a + x.rows.length; }, 0);
+
+  Logger.log('');
+  Logger.log('--- summary ---');
+  Logger.log('  route+charge groups to change : ' + plan.length);
+  Logger.log('  periods to deactivate here    : ' + deletes);
+  Logger.log('  periods to write from source  : ' + creates);
+  Logger.log('  groups skipped                : ' + skipped.length);
+  Logger.log('  write calls if committed      : ' + (deletes + creates));
+
+  if (onlyHere.length) {
+    Logger.log('');
+    Logger.log('--- ' + onlyHere.length + ' route+charge group(s) exist HERE and not in the ' +
+               'source: LEFT ALONE ---');
+    onlyHere.slice(0, 40).forEach(function (o) {
+      Logger.log('    ' + o.table + '  MID ' + pad_(o.mid, 4) +
+                 (o.code ? '  ' + o.code : '') + '  ' + o.periods + ' period(s)');
+    });
+    if (onlyHere.length > 40) Logger.log('    ... and ' + (onlyHere.length - 40) + ' more');
+    Logger.log('  These are NOT deleted. The source is a snapshot, so its silence about a');
+    Logger.log('  route means the snapshot predates it, not that it should go. If any of');
+    Logger.log('  them genuinely should be removed, remove them deliberately by hand.');
+  }
+
+  if (deletes + creates > 150) {
+    Logger.log('');
+    Logger.log('  ** ' + (deletes + creates) + ' write calls, each taking the script lock and');
+    Logger.log('     re-reading the tab. That may not finish inside the 6-minute ceiling.');
+    Logger.log('     Re-running is safe and resumes: groups that already match are skipped.');
+  }
+
+  if (!commit) {
+    Logger.log('');
+    Logger.log('  NOTHING WRITTEN. Read the was/now lines above, then run');
+    Logger.log('  runRateCopyFromTestCopy() to apply exactly this plan.');
+    return { ok: true, preview: true, from: { id: wanted, name: otherSs.getName() },
+             into: { id: thisId, name: thisSs.getName() },
+             groups: plan.length, periodsToDeactivate: deletes, periodsToWrite: creates,
+             writeCalls: deletes + creates, skipped: skipped, onlyHere: onlyHere };
+  }
+
+  if (!plan.length) throw new Error('Nothing to copy — every group already matches or was ' +
+    'skipped. Reasons are in the log above.');
+
+  // ---- write ---------------------------------------------------------------
+  Logger.log('');
+  Logger.log('--- writing ---');
+  const done = [], failed = [];
+
+  plan.forEach(function (x) {
+    const isBase = x.table.key === 'RATE_BASE';
+    const note = 'Copied from ' + otherSs.getName();
+    let deactivated = 0, created = 0;
+    try {
+      x.deleteIds.forEach(function (id) {
+        if (isBase) deleteBaseRate(id); else deleteSurchargeRate(id);
+        deactivated++;
+      });
+      x.rows.forEach(function (r) {
+        const p = { modellingId: x.mid, validFrom: r.from, validTo: r.to,
+                    value: r.value, currency: r.currency,
+                    scenarioId: r.scenarioId,
+                    sourceRef: RATE_MOVE_SOURCE_REF, notes: note };
+        if (isBase) saveBaseRate(p);
+        else { p.code = x.code; saveSurchargeRate(p); }
+        created++;
+      });
+      Logger.log('  MID ' + pad_(x.mid, 4) + (x.code ? '  ' + pad_(x.code, 10) : '') +
+                 '  OK — ' + deactivated + ' deactivated, ' + created + ' written');
+      done.push({ mid: x.mid, code: x.code, deactivated: deactivated, created: created });
+    } catch (e) {
+      /* Part way through a group is the bad case: old periods off, new ones
+         incomplete, so the route has a GAP in its rate schedule and the engine
+         will price it at nothing for those months. Said loudly. */
+      const partial = (deactivated > 0 || created > 0) && created < x.rows.length;
+      Logger.log('  MID ' + pad_(x.mid, 4) + (x.code ? '  ' + pad_(x.code, 10) : '') +
+                 '  ' + (partial ? '** PART DONE **' : 'FAILED') + ' — ' + e.message);
+      if (partial) {
+        Logger.log('      ' + deactivated + ' deactivated, only ' + created + ' of ' +
+                   x.rows.length + ' written. This route has a GAP in its schedule now.');
+      }
+      failed.push({ mid: x.mid, code: x.code, error: e.message, partial: partial });
+    }
+  });
+
+  const partials = failed.filter(function (f) { return f.partial; });
+  Logger.log('');
+  Logger.log('--- done in ' + Math.round((Date.now() - t0) / 1000) + 's ---');
+  Logger.log('  changed : ' + done.length + ' group(s)');
+  Logger.log('  failed  : ' + failed.length);
+  Logger.log('  skipped : ' + skipped.length);
+  if (partials.length) {
+    Logger.log('  ** PART DONE, schedule has a gap: ' +
+               partials.map(function (f) { return f.mid + (f.code ? '/' + f.code : ''); })
+                       .join(', '));
+  }
+  Logger.log('');
+  Logger.log('  Every row went through saveBaseRate / saveSurchargeRate, so it is all in');
+  Logger.log('  the Amends tables and the Audit_Log. Re-run the calculation and publish for');
+  Logger.log('  these to reach the forecast.');
+
+  return { ok: !failed.length, preview: false,
+           from: { id: wanted, name: otherSs.getName() },
+           into: { id: thisId, name: thisSs.getName() },
+           changed: done.length, failed: failed, skipped: skipped,
+           partial: partials, onlyHere: onlyHere,
+           seconds: Math.round((Date.now() - t0) / 1000) };
+}
+
+/** Preview the copy from the test copy named in utils.gs. Writes nothing. */
+function previewRateCopyFromTestCopy() { return copyRatesFromOtherSpreadsheet(false, null); }
+/** Apply it. */
+function runRateCopyFromTestCopy()     { return copyRatesFromOtherSpreadsheet(true, null); }
