@@ -169,18 +169,32 @@ input.bad{border-color:var(--err);background:#FFF6F7}
              color:var(--err);border-radius:8px;font-size:13px}
 .inline{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink-2)}
 .inline input[type=checkbox]{width:auto}
-/* ---- tick-box groups: one collapsed row per dimension, opened to narrow ---- */
-.checks{border:1px solid var(--line);border-radius:8px;background:var(--surface);
-       overflow:hidden}
-.checks>summary{display:flex;align-items:center;gap:8px;padding:8px 11px;
-       cursor:pointer;list-style:none;font-size:13px;color:var(--ink-2)}
-.checks>summary::-webkit-details-marker{display:none}
-.checks>summary:hover{background:var(--bg)}
-.checks>summary:focus-visible{outline:2px solid var(--brand);outline-offset:-2px}
-.checks[open]>summary{border-bottom:1px solid var(--line)}
+/* ---- one dimension per dropdown: a closed control opening a tick-box panel ----
+   Reads as a dropdown and keeps multi-select, which a <select> cannot express —
+   the answer is often "these three methods", and values inside one dimension are
+   ORed.
+
+   The panel is position:FIXED, and that is not a style preference. .modal .fields
+   is max-height:56vh;overflow:auto and .modal itself is overflow:hidden, so an
+   absolutely-positioned panel gets clipped by both: it would appear cut off, or
+   force the form to scroll to reveal it, which is the pushing-the-form-around
+   behaviour this replaces. Fixed escapes both clips, at the cost of placing it
+   from script (ckPlace) and re-placing it when the form scrolls or the window
+   resizes. */
+.checks{position:relative}
+.checks .cksum{display:flex;align-items:center;gap:8px;width:100%;padding:8px 11px;
+       font:inherit;font-size:13px;color:var(--ink-2);text-align:left;cursor:pointer;
+       background:var(--surface);border:1px solid var(--line);border-radius:8px}
+.checks .cksum:hover{border-color:var(--ink-3)}
+.checks .cksum:focus-visible{outline:2px solid var(--brand);outline-offset:-2px}
+.checks.open .cksum{border-color:var(--brand)}
 .checks .cnt{margin-left:auto;font-size:12px;color:var(--ink-3)}
 .checks .chev{font-size:10px;color:var(--ink-3);transition:transform .12s}
-.checks[open] .chev{transform:rotate(180deg)}
+.checks.open .chev{transform:rotate(180deg)}
+.checks .ckpanel{display:none;position:fixed;z-index:110;background:var(--surface);
+       border:1px solid var(--line);border-radius:8px;
+       box-shadow:0 10px 28px rgba(11,11,15,.18)}
+.checks.open .ckpanel{display:block}
 .checks .cacts{display:flex;gap:6px;padding:8px 11px 0}
 .checks .cacts button{font:inherit;font-size:11px;color:var(--brand);padding:2px 8px;
        border-radius:5px;cursor:pointer;background:none;border:1px solid var(--line)}
@@ -190,7 +204,7 @@ input.bad{border-color:var(--err);background:#FFF6F7}
 .checks .clist label{display:flex;align-items:center;gap:6px;font-size:12px;
        color:var(--ink-2);cursor:pointer;min-width:calc(50% - 10px)}
 .checks .clist input[type=checkbox]{width:auto;margin:0;flex:none}
-.checks.none{border-color:var(--err)}
+.checks.none .cksum{border-color:var(--err)}
 .checks.none .cnt{color:var(--err)}
 .suffixed{display:flex;align-items:center;gap:6px}
 .suffixed span{font-size:12px;color:var(--ink-3);white-space:nowrap}
@@ -377,25 +391,41 @@ function showOk(msg){
 var openModal=null;
 
 function closeForm(){
+  /* The resize listener is on window, not on the modal, so removing the modal
+     from the document does not take it with it — it would keep firing against a
+     detached form for the life of the page. */
+  if(openModal && openModal._ckReplace){
+    window.removeEventListener('resize', openModal._ckReplace);
+  }
   if(openModal && openModal.parentNode) openModal.parentNode.removeChild(openModal);
   openModal=null;
   document.onkeydown=null;
 }
 
 /**
- * One dimension as a row that collapses: its name, what is selected, a chevron.
+ * One dimension as a dropdown: its name, what is selected, a chevron.
  *
  * Six dimensions open at once is a wall of tick boxes for a form whose answer is
- * usually All, so each starts shut and states its own count — "All 5" reads as an
- * answer, where five ticked boxes read as work still to do. Opening one is how you
- * narrow it.
+ * usually All, so each is a closed control stating its own count — "All 5" reads
+ * as an answer, where five ticked boxes read as work still to do. Opening one is
+ * how you narrow it.
+ *
+ * A dropdown rather than a <select> because a select is single-choice and this is
+ * not: values inside one dimension are ORed, so "these three methods" is a normal
+ * answer and a select could not say it. So it is a button that looks like a select
+ * and a floating panel of tick boxes — the multi-select control this form needs,
+ * wearing the shape people expect.
  *
  * Everything is ticked unless the caller passes a list, because All is the useful
  * default for a bulk change and a form that opens on nothing selected invites a
  * change that matches nothing. A list ticks exactly its members, matched
  * case-insensitively so a value round-tripped through the server ticks the box it
- * came from, and opens the row, since a narrowed dimension is the one thing on
- * this form worth seeing without a click.
+ * came from, and opens the dropdown, since a narrowed dimension is the one thing
+ * on this form worth seeing without a click.
+ *
+ * The data-ck* hooks and the value contract are deliberately unchanged from the
+ * <details> version this replaces: all-ticked still leaves as '', anything else as
+ * a list. Only the presentation moved.
  */
 function checksField(f){
   var sel=f.value, want=null;
@@ -410,11 +440,14 @@ function checksField(f){
     var v=(o.value!==undefined?o.value:o);
     if(!want || want[String(v).toUpperCase()]) on0++;
   });
-  var h='<details class="checks" data-ckgroup="'+esc(f.key)+'"'+(want?' open':'')+'>';
-  h+='<summary><span>'+esc(f.label)+'</span>'+
+  var h='<div class="checks'+(want?' open':'')+'" data-ckgroup="'+esc(f.key)+'">';
+  h+='<button type="button" class="cksum" data-cktoggle="'+esc(f.key)+'"'+
+     ' aria-expanded="'+(want?'true':'false')+'">'+
+     '<span>'+esc(f.label)+'</span>'+
      '<span class="cnt" data-ckcount="'+esc(f.key)+'">'+
      (on0===opts.length?'All '+opts.length:on0+' of '+opts.length)+'</span>'+
-     '<span class="chev">▾</span></summary>';
+     '<span class="chev">▾</span></button>';
+  h+='<div class="ckpanel" data-ckpanel="'+esc(f.key)+'">';
   h+='<div class="cacts">'+
      '<button type="button" data-ckall="'+esc(f.key)+'">All</button>'+
      '<button type="button" data-cknone="'+esc(f.key)+'">None</button></div>';
@@ -425,7 +458,39 @@ function checksField(f){
     h+='<label><input type="checkbox" data-ck="'+esc(f.key)+'" value="'+esc(v)+'"'+
        (on?' checked':'')+'>'+esc(l)+'</label>';
   });
-  return h+'</div></details>';
+  return h+'</div></div></div>';
+}
+
+/**
+ * Put an open panel where its control is, in viewport coordinates.
+ *
+ * Needed because the panel is position:fixed to escape the form's overflow — see
+ * the .ckpanel comment in the stylesheet. Flips above the control when there is
+ * more room there, so the last dimension in a scrolled form does not open into
+ * nothing.
+ */
+function ckPlace(group){
+  var btn=group.querySelector('.cksum'), panel=group.querySelector('.ckpanel');
+  if(!btn||!panel) return;
+  var r=btn.getBoundingClientRect();
+  panel.style.width=r.width+'px';
+  panel.style.left=r.left+'px';
+  /* Measured after .open is set, so offsetHeight is the real height. */
+  var ph=panel.offsetHeight, room=window.innerHeight-r.bottom-8;
+  panel.style.top=(ph>room && r.top-8>room ? r.top-ph-4 : r.bottom+4)+'px';
+}
+
+/** Shut every open dimension dropdown. Returns whether it shut anything. */
+function ckCloseAll(root, except){
+  var shut=false;
+  Array.prototype.forEach.call(root.querySelectorAll('.checks.open'),function(g){
+    if(g===except) return;
+    g.classList.remove('open');
+    var b=g.querySelector('.cksum');
+    if(b) b.setAttribute('aria-expanded','false');
+    shut=true;
+  });
+  return shut;
 }
 
 /**
@@ -545,7 +610,9 @@ function openForm(cfg){
       Array.prototype.forEach.call(boxes,function(b){ if(b.checked) n++; });
       cnt.textContent = n===boxes.length ? 'All '+boxes.length
                       : (n===0 ? 'None' : n+' of '+boxes.length);
-      group.className='checks'+(n===0?' none':'');
+      /* toggle, not className=, so it cannot wipe the 'open' class out from under
+         the dropdown every time a box is ticked. */
+      group.classList.toggle('none', n===0);
     }
     Array.prototype.forEach.call(boxes,function(b){ b.onchange=sync; });
     var all=back.querySelector('[data-ckall="'+f.key+'"]');
@@ -554,12 +621,50 @@ function openForm(cfg){
       Array.prototype.forEach.call(boxes,function(b){ b.checked=true; }); sync(); };
     if(none) none.onclick=function(){
       Array.prototype.forEach.call(boxes,function(b){ b.checked=false; }); sync(); };
+
+    /* Open one at a time: two panels floating over each other is a stack of
+       tick boxes with no way to tell which dimension you are narrowing. */
+    var toggle=back.querySelector('[data-cktoggle="'+f.key+'"]');
+    if(toggle) toggle.onclick=function(){
+      var wasOpen=group.classList.contains('open');
+      ckCloseAll(back, group);
+      group.classList.toggle('open', !wasOpen);
+      toggle.setAttribute('aria-expanded', wasOpen?'false':'true');
+      if(!wasOpen) ckPlace(group);
+    };
+    if(group.classList.contains('open')) ckPlace(group);
     sync();
   });
 
+  /* A fixed panel does not travel with the form, so re-place it when the form
+     scrolls or the window changes size. Cheap, and the alternative — closing on
+     scroll — loses a half-made selection to a stray trackpad nudge. */
+  var ckReplace=function(){
+    Array.prototype.forEach.call(back.querySelectorAll('.checks.open'), ckPlace);
+  };
+  var fieldsBox=back.querySelector('.fields');
+  if(fieldsBox) fieldsBox.addEventListener('scroll', ckReplace);
+  window.addEventListener('resize', ckReplace);
+  back._ckReplace=ckReplace;    // so closeForm can take the window listener off again
+
   back.querySelector('#mCancel').onclick=closeForm;
-  back.onclick=function(e){ if(e.target===back) closeForm(); };
-  document.onkeydown=function(e){ if(e.key==='Escape') closeForm(); };
+  back.onclick=function(e){
+    if(e.target===back) return closeForm();
+    /* A click anywhere in the form that is not inside a dropdown shuts the open
+       one, which is the behaviour a dropdown is expected to have and the reason
+       the panel needs no scrim of its own. Clicking a tick box is inside .checks
+       — the panel is still a DOM child of it, fixed positioning notwithstanding —
+       so ticking does not close what you are ticking. */
+    if(!(e.target.closest && e.target.closest('.checks'))) ckCloseAll(back);
+  };
+  document.onkeydown=function(e){
+    if(e.key!=='Escape') return;
+    /* Escape shuts an open dropdown first, and the form only when none is open,
+       so it cannot throw away a part-filled bulk change because a panel happened
+       to be showing. */
+    if(ckCloseAll(back)) return;
+    closeForm();
+  };
 
   if(cfg.afterRender) cfg.afterRender(back, closeForm);
 
