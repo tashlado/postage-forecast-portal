@@ -2487,3 +2487,222 @@ function copyFuelScheduleToOtherHighLevelIds(commit) {
 /** Convenience wrappers, so both appear in the editor's function list. */
 function previewFuelScheduleSpread() { return copyFuelScheduleToOtherHighLevelIds(false); }
 function runFuelScheduleSpread()     { return copyFuelScheduleToOtherHighLevelIds(true); }
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COMPARING RATE DATA BETWEEN TWO SPREADSHEETS
+//
+// clasp push moves CODE. It has never moved DATA, and the two get conflated at
+// exactly the wrong moment: after a change is proven in the test portal, when the
+// obvious next sentence is "now make production the same".
+//
+// Making them the same wholesale is the dangerous reading. The test copy is a
+// SNAPSHOT — everything that happened in production since it was taken lives only
+// in production. Overwriting production with the copy would delete that silently:
+// somebody else's rate change, an actuals load, a published forecast. And the rows
+// would arrive with no *_Amends history behind them, so the audit trail would show
+// values nobody ever saved.
+//
+// So this reports and never writes. It answers the three questions that decide
+// what is safe to do next:
+//
+//   ONLY IN OTHER   — changes made there that production has not got. What you
+//                     probably want moved.
+//   ONLY IN THIS    — rows production has and the other does not. What a wholesale
+//                     copy would DESTROY. If this list is not empty, do not copy
+//                     wholesale.
+//   DIFFERENT       — same period, different value. Needs a decision per row,
+//                     because either side could be the newer truth.
+//
+// Read-only, both sides. Run it from either project.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Rate tables only. Mixes and actuals are a separate question, deliberately. */
+function rateDiffTables_() {
+  return [
+    { key: 'RATE_BASE', label: 'Rate_Base',
+      idCol: 'Rate_ID', valueCol: 'Base_Rate', codeCol: null },
+    { key: 'RATE_SURCHARGE', label: 'Rate_Surcharge',
+      idCol: 'Surcharge_Rate_ID', valueCol: 'Value', codeCol: 'Surcharge_Code' }
+  ];
+}
+
+/**
+ * One rate row reduced to what identifies it and what it says.
+ *
+ * Keyed on route + charge code + start date + scenario, NOT on the row ID. Row IDs
+ * are allocated per spreadsheet, so the same rate created independently on both
+ * sides has different IDs, and a copy taken at one moment has the same IDs for
+ * rows that have since diverged. The business key is the only thing that means the
+ * same on both sides.
+ */
+function rateDiffRows_(ss, t) {
+  const sh = ss.getSheetByName(TABLES[t.key].sheet);
+  if (!sh) return null;                       // tab missing — reported, not guessed at
+  const data = sh.getDataRange().getValues();
+  const C = COL[t.key], out = {};
+  for (let i = 1; i < data.length; i++) {
+    const r = data[i];
+    const mid = safeInt(r[C.Modelling_ID]);
+    if (!mid) continue;
+    if (!safeBool(r[C.Active])) continue;      // inactive rows are history, not state
+    const code = t.codeCol ? normKey(r[C[t.codeCol]]) : '';
+    const key = mid + '|' + code + '|' + dateKey(r[C.Valid_From]) + '|' +
+                (safeInt(r[C.Scenario_ID]) || 1);
+    out[key] = {
+      key: key, id: safeInt(r[C[t.idCol]]), mid: mid, code: code,
+      from: fmtDate(r[C.Valid_From]), to: fmtDate(r[C.Valid_To]),
+      value: safeNum(r[C[t.valueCol]]),
+      currency: safeStr(r[C.Currency]),
+      scenarioId: safeInt(r[C.Scenario_ID]) || 1,
+      sourceRef: safeStr(r[C.Source_Ref])
+    };
+  }
+  return out;
+}
+
+/** Same period, same money? Tolerance because a fraction does not round-trip exactly. */
+function rateDiffSame_(a, b) {
+  return a.to === b.to && Math.abs(a.value - b.value) < 1e-9 &&
+         normKey(a.currency) === normKey(b.currency);
+}
+
+function rateDiffLine_(r) {
+  return 'MID ' + pad_(r.mid, 4) + (r.code ? '  ' + pad_(r.code, 10) : '') +
+         '  ' + r.from + ' to ' + r.to +
+         '  ' + pad_(r.value.toFixed(4), 10) +
+         (r.currency ? ' ' + r.currency : '') + '  scen ' + r.scenarioId;
+}
+
+/**
+ * Compare this project's rate data against another spreadsheet's.
+ *
+ * @param {string=} otherId  defaults to TEST_SPREADSHEET_ID
+ */
+function compareRatesWithOtherSpreadsheet(otherId) {
+  requireMaintenance_();
+  Logger.log('=== RATE DATA COMPARISON (read-only, nothing is written) ===');
+
+  const thisId = spreadsheetId_();
+  const wanted = safeStr(otherId) || safeStr(TEST_SPREADSHEET_ID);
+
+  if (!wanted || wanted === 'PASTE_THE_TEST_SPREADSHEET_ID_HERE') {
+    throw new Error('No spreadsheet to compare against. Pass an ID, or set ' +
+      'TEST_SPREADSHEET_ID in utils.gs.');
+  }
+  if (wanted === thisId) {
+    throw new Error('That is the spreadsheet this project already uses (' + thisId +
+      '), so there is nothing to compare. Pass the OTHER one.');
+  }
+
+  let thisSs, otherSs;
+  try { thisSs = SpreadsheetApp.openById(thisId); }
+  catch (e) { throw new Error('Cannot open this project\'s own spreadsheet ' + thisId +
+    ': ' + e.message); }
+  try { otherSs = SpreadsheetApp.openById(wanted); }
+  catch (e) { throw new Error('Cannot open ' + wanted + ': ' + e.message +
+    '  Check this account has access to it.'); }
+
+  Logger.log('  THIS  (what a move would change) : ' + thisId);
+  Logger.log('                                     ' + thisSs.getName());
+  Logger.log('  OTHER (where the edits were made): ' + wanted);
+  Logger.log('                                     ' + otherSs.getName());
+
+  const summary = [];
+
+  rateDiffTables_().forEach(function (t) {
+    Logger.log('');
+    Logger.log('════ ' + t.label + ' ════');
+
+    const mine = rateDiffRows_(thisSs, t), theirs = rateDiffRows_(otherSs, t);
+    if (!mine || !theirs) {
+      Logger.log('  Tab missing on ' + (!mine ? 'THIS' : 'OTHER') + ' — skipped.');
+      summary.push({ table: t.label, error: 'tab missing' });
+      return;
+    }
+
+    const onlyOther = [], onlyThis = [], differ = [];
+    Object.keys(theirs).forEach(function (k) {
+      if (!mine[k]) onlyOther.push(theirs[k]);
+      else if (!rateDiffSame_(mine[k], theirs[k])) differ.push({ mine: mine[k], theirs: theirs[k] });
+    });
+    Object.keys(mine).forEach(function (k) { if (!theirs[k]) onlyThis.push(mine[k]); });
+
+    onlyOther.sort(function (a, b) { return a.mid - b.mid || (a.from < b.from ? -1 : 1); });
+    onlyThis.sort(function (a, b) { return a.mid - b.mid || (a.from < b.from ? -1 : 1); });
+    differ.sort(function (a, b) { return a.theirs.mid - b.theirs.mid; });
+
+    Logger.log('  active rows: THIS ' + Object.keys(mine).length +
+               ',  OTHER ' + Object.keys(theirs).length);
+
+    Logger.log('');
+    Logger.log('  --- ONLY IN OTHER: ' + onlyOther.length + ' — the edits not yet here ---');
+    onlyOther.slice(0, 60).forEach(function (r) { Logger.log('    + ' + rateDiffLine_(r)); });
+    if (onlyOther.length > 60) Logger.log('    ... and ' + (onlyOther.length - 60) + ' more');
+
+    Logger.log('');
+    Logger.log('  --- DIFFERENT: ' + differ.length + ' — same period, different value ---');
+    differ.slice(0, 60).forEach(function (d) {
+      Logger.log('    ~ ' + rateDiffLine_(d.theirs));
+      Logger.log('      here: ' + d.mine.to + '  ' + d.mine.value.toFixed(4) +
+                 (d.mine.currency ? ' ' + d.mine.currency : ''));
+    });
+    if (differ.length > 60) Logger.log('    ... and ' + (differ.length - 60) + ' more');
+
+    Logger.log('');
+    Logger.log('  --- ONLY IN THIS: ' + onlyThis.length +
+               ' — a wholesale copy would DESTROY these ---');
+    onlyThis.slice(0, 60).forEach(function (r) { Logger.log('    - ' + rateDiffLine_(r)); });
+    if (onlyThis.length > 60) Logger.log('    ... and ' + (onlyThis.length - 60) + ' more');
+
+    summary.push({ table: t.label, thisRows: Object.keys(mine).length,
+                   otherRows: Object.keys(theirs).length,
+                   onlyInOther: onlyOther.length, different: differ.length,
+                   onlyInThis: onlyThis.length,
+                   onlyInOtherRows: onlyOther.slice(0, 200),
+                   differentRows: differ.slice(0, 200) });
+  });
+
+  // ---- everything else, by row count only, so other drift is visible ------
+  Logger.log('');
+  Logger.log('════ every other tab, row counts only ════');
+  Logger.log('  ' + pad_('THIS', 8) + pad_('OTHER', 8) + '  tab');
+  const drift = [];
+  Object.keys(TABLES).forEach(function (k) {
+    const name = TABLES[k].sheet;
+    if (name === 'Rate_Base' || name === 'Rate_Surcharge') return;
+    const a = thisSs.getSheetByName(name), b = otherSs.getSheetByName(name);
+    const an = a ? Math.max(a.getLastRow() - 1, 0) : -1;
+    const bn = b ? Math.max(b.getLastRow() - 1, 0) : -1;
+    if (an !== bn) {
+      drift.push({ tab: name, thisRows: an, otherRows: bn });
+      Logger.log('  ' + pad_(an < 0 ? 'none' : an, 8) + pad_(bn < 0 ? 'none' : bn, 8) +
+                 '  ' + name + '   <- differs');
+    }
+  });
+  if (!drift.length) Logger.log('  Every other tab has the same number of rows.');
+
+  const totalOnlyThis = summary.reduce(function (a, s) {
+    return a + (s.onlyInThis || 0); }, 0);
+
+  Logger.log('');
+  Logger.log('--- what this means ---');
+  if (totalOnlyThis) {
+    Logger.log('  ' + totalOnlyThis + ' active rate row(s) exist HERE and not in the other');
+    Logger.log('  spreadsheet. A wholesale copy would delete them. Move the ONLY IN OTHER');
+    Logger.log('  and DIFFERENT rows deliberately instead — through saveBaseRate /');
+    Logger.log('  saveSurchargeRate, so each one gets an Amends row saying who changed it.');
+  } else {
+    Logger.log('  Nothing exists here that is absent there, so no rate row would be lost.');
+    Logger.log('  That does not make a wholesale copy right — rows written directly still');
+    Logger.log('  arrive with no history behind them — but it removes the worst risk.');
+  }
+  Logger.log('  Nothing was written. This function has no write path.');
+
+  return { ok: true, thisSpreadsheet: { id: thisId, name: thisSs.getName() },
+           otherSpreadsheet: { id: wanted, name: otherSs.getName() },
+           tables: summary, otherTabDrift: drift };
+}
+
+/** Compare against the test copy named in utils.gs. */
+function compareRatesWithTestCopy() { return compareRatesWithOtherSpreadsheet(null); }
