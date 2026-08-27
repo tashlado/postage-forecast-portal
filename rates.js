@@ -2100,13 +2100,32 @@ function runFuelScheduleCopy()     { return copyFuelScheduleToModellingIds(true)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * The routes whose FUEL schedule is authoritative. Everything else is derived.
+ * The routes whose FUEL schedule is authoritative: EVERY active Royal Mail route
+ * under the source High Level ID.
  *
- * Modelling IDs rather than a carrier/method pair because these are the rows a
- * person edited and can point at. The run reports what each one turns out to be
- * and refuses if they are not all under one High Level ID.
+ * This was a hardcoded [5, 6], and that was the wrong shape. Naming two Modelling
+ * IDs answers "spread the two routes I just edited", but the question that keeps
+ * being asked is "make every Royal Mail method match High Level ID 1" — and with a
+ * hardcoded pair, sixteen of HL1's eighteen Royal Mail methods were simply never
+ * looked at. Nothing reported that, because from the tool's point of view it had
+ * done exactly what it was told.
+ *
+ * Derived instead, so adding a method to HL1 puts it in scope automatically rather
+ * than needing this line edited. Carrier comes from the same exact-match allowlist
+ * the rest of this file uses, so 'ROYALMAIL' and 'RM' are both recognised and
+ * nothing else is.
+ *
+ * @param {Array<Object>} all  from fuelSpreadRoutes_().all
+ * @return {Array<number>} Modelling IDs, ascending
  */
-const FUEL_SPREAD_SOURCE_MIDS = [5, 6];
+function fuelSpreadSourceMids_(all) {
+  const accepted = {};
+  FUEL_COPY_SOURCE_CARRIERS.forEach(function (c) { accepted[normKey(c)] = true; });
+  return all.filter(function (r) {
+    return r.hlId === FUEL_COPY_SOURCE_HL_ID && r.active && accepted[r.carrier];
+  }).map(function (r) { return r.id; })
+    .sort(function (a, b) { return a - b; });
+}
 
 const FUEL_SPREAD_SOURCE_REF = 'Bulk copy from HL1 by method';
 
@@ -2166,11 +2185,27 @@ function copyFuelScheduleToOtherHighLevelIds(commit) {
   const routes = fuelSpreadRoutes_();
 
   // ═══ 1. Resolve the source routes ════════════════════════════════════════
+  const sourceMids = fuelSpreadSourceMids_(routes.all);
+
   Logger.log('');
-  Logger.log('--- 1. sources: Modelling IDs ' + FUEL_SPREAD_SOURCE_MIDS.join(' and ') + ' ---');
+  Logger.log('--- 1. sources: every active Royal Mail route under High Level ID ' +
+             FUEL_COPY_SOURCE_HL_ID + ' ---');
+  if (!sourceMids.length) {
+    Logger.log('  NONE. High Level ID ' + FUEL_COPY_SOURCE_HL_ID + ' has no active route with a ' +
+               'Carrier_Code matching: ' + FUEL_COPY_SOURCE_CARRIERS.join(', '));
+    const census = {};
+    routes.all.forEach(function (r) {
+      if (r.hlId === FUEL_COPY_SOURCE_HL_ID) census[r.carrier] = (census[r.carrier] || 0) + 1; });
+    Logger.log('  Carrier codes it does have:');
+    Object.keys(census).sort().forEach(function (c) {
+      Logger.log('    ' + pad_(census[c], 5) + '  ' + (c || '(blank)')); });
+    return { ok: false, reason: 'no source routes under the source High Level ID',
+             carrierCensus: census };
+  }
+  Logger.log('  ' + sourceMids.length + ' route(s): Modelling IDs ' + sourceMids.join(', '));
 
   const sources = [], sourceProblems = [];
-  FUEL_SPREAD_SOURCE_MIDS.forEach(function (id) {
+  sourceMids.forEach(function (id) {
     const r = routes.byId[id];
     if (!r) { sourceProblems.push('Modelling ID ' + id + ' does not exist'); return; }
     if (!r.active) { sourceProblems.push('Modelling ID ' + id + ' is inactive'); return; }
@@ -2226,9 +2261,9 @@ function copyFuelScheduleToOtherHighLevelIds(commit) {
   for (let i = 0; i < sources.length; i++) {
     if (seenKeys[sources[i].key]) {
       Logger.log('');
-      Logger.log('  STOPPING. Modelling IDs ' + FUEL_SPREAD_SOURCE_MIDS.join(' and ') +
-                 ' describe the same route (' + sources[i].key + '), so one would ' +
-                 'overwrite the other.');
+      Logger.log('  STOPPING. Two source routes describe the same carrier / method / class (' +
+                 sources[i].key + '), so one would overwrite the other. Modelling IDs in ' +
+                 'scope: ' + sourceMids.join(', '));
       return { ok: false, reason: 'sources are the same route', key: sources[i].key };
     }
     seenKeys[sources[i].key] = true;
