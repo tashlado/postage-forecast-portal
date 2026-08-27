@@ -304,26 +304,6 @@ function setupSeedReferenceData() {
     return row;
   }, r => r[0], d => safeStr(d[COL.CONFIG.Key]));
 
-  /* One starter block, so the Guide tab explains its own format rather than
-     appearing as an empty grid with five unexplained headers. Matched on Heading,
-     so it is never re-added once someone has rewritten or removed it. */
-  n += seedTable_('GUIDE', 'Sort_Order', [[
-    10, 'About this guide',
-    'This text is written on the Guide tab of the spreadsheet, one row per block. ' +
-    'Edit it there and it appears here on the next reload — no deploy needed.\n\n' +
-    'Each row has:\n' +
-    '- Sort_Order, which decides where the block appears\n' +
-    '- Heading, optional — leave it blank for a block that continues the one above\n' +
-    '- Body, the text. A blank line starts a new paragraph, and a line beginning ' +
-    'with "- " becomes a bullet\n' +
-    '- Active, which hides a block without deleting it'
-  ]], (r) => {
-    const row = blankRow_('GUIDE'), C = COL.GUIDE;
-    row[C.Sort_Order] = r[0]; row[C.Heading] = r[1]; row[C.Body] = r[2];
-    row[C.Active] = true;
-    return row;
-  }, r => r[1], d => safeStr(d[COL.GUIDE.Heading]));
-
   n += seedTable_('SCENARIOS', 'Scenario_ID', [['BASE', 'Base case — the live forecast']], (r) => {
     const row = blankRow_('SCENARIOS'), C = COL.SCENARIOS;
     row[C.Scenario_ID] = 1;  row[C.Scenario_Name] = r[0];

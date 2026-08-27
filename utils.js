@@ -215,15 +215,6 @@ const TABLES = {
     sheet: 'Config', width: 200,
     headers: ['Key', 'Value', 'Description', 'Updated_TS', 'Updated_By']
   },
-  /* The Guide tab's content, written as rows rather than embedded from a document.
-     Kept in the spreadsheet because the spreadsheets OAuth scope is already
-     granted: no user has to re-authorise, no file has to be shared or published,
-     and whoever can edit the forecast can edit its guide. One row is one block —
-     an optional heading and a body — so ordering and rewording need no deploy. */
-  GUIDE: {
-    sheet: 'Guide', width: 320,
-    headers: ['Sort_Order', 'Heading', 'Body', 'Active', 'Notes']
-  },
   FX_RATES: {
     sheet: 'FX_Rates', width: 130,
     headers: ['FX_ID', 'Month_Start', 'Currency', 'Rate_To_GBP', 'Source', 'Active']

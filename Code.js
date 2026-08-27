@@ -98,7 +98,7 @@ function initApp() {
     SHEET.PERMISSIONS, SHEET.PORTAL_ROLES, SHEET.SCOPE_MAPPING, SHEET.CONFIG,
     SHEET.DIM_REFERENCE, SHEET.DIM_CARRIER, SHEET.DIM_METHOD, SHEET.DIM_SURCHARGE,
     SHEET.DIM_CALENDAR, SHEET.HIGH_LEVEL_IDS, SHEET.MODELLING_IDS,
-    SHEET.SCENARIOS, SHEET.CALC_RUNS, SHEET.AUDIT_LOG, SHEET.GUIDE
+    SHEET.SCENARIOS, SHEET.CALC_RUNS, SHEET.AUDIT_LOG
   ]);
   perfMark('init: sheets fetched');
 
@@ -134,7 +134,6 @@ function initApp() {
          a missing guide should leave no trace rather than a dead link. */
       guideUrl:      configStr('GUIDE_URL', '')
     },
-    guide: loadGuideForClient_(),
     status: loadStatus_()
   };
   perfMark('init: payload built');
@@ -281,36 +280,116 @@ function loadHighLevelIdsForClient_(perms, visible) {
   return out.sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// THE GUIDE — a published Google Doc, read as text
+//
+// Fetched from the document's "publish to web" address, which needs no OAuth scope
+// beyond script.external_request that this project already has. The alternative —
+// reading the document through the Docs API — would have meant adding a scope, and
+// adding a scope forces EVERY user to re-authorise before the portal will load for
+// them again. Publishing was chosen over that, deliberately, knowing the trade: a
+// published document is readable by anyone holding the link, including outside the
+// domain. Fine for a how-to, wrong for anything commercially sensitive.
+//
+// Called on demand when the Guide tab is opened, not from initApp. initApp is the
+// deliberately-fast first call and has no business making an HTTP request to
+// another Google product before the page frame can render.
+//
+// Everything is reduced to PLAIN TEXT here — every tag stripped, every entity
+// decoded — and re-escaped by the client when it renders. So nothing in the
+// document, however it is formatted or whatever is pasted into it, can put markup
+// or script into the portal. That matters because a published document is
+// world-readable and therefore world-visible, but also because Google's own export
+// HTML is full of inline styles and spans that would fight the portal's styling.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** HTML entities to characters, for text pulled out of the published document. */
+function guideDecodeEntities_(s) {
+  return String(s)
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&#(\d+);/g, function (m, d) { return String.fromCharCode(parseInt(d, 10)); })
+    .replace(/&#x([0-9a-fA-F]+);/g, function (m, h) {
+      return String.fromCharCode(parseInt(h, 16)); })
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&');          // last, or an escaped entity decodes twice
+}
+
+/** One block element's inner HTML to plain text. */
+function guideBlockText_(html) {
+  return guideDecodeEntities_(
+    String(html)
+      .replace(/<br\s*\/?>/gi, ' ')
+      .replace(/<[^>]*>/g, '')        // every tag, including Google's spans
+  ).replace(/\s+/g, ' ').trim();
+}
+
 /**
- * The Guide tab's blocks, in order.
+ * Read the published document and return its blocks.
  *
- * Reads through getAllData_, so a tab that does not exist yet returns nothing
- * rather than throwing — the Guide screen then explains how to fill it in, and
- * initApp is not brought down by a missing reference tab. That matters more than
- * it looks: initApp is the first call the page makes, so anything that throws here
- * takes the whole portal with it.
- *
- * No permission check beyond the portal's own: this is documentation, and it is
- * held in the spreadsheet precisely so that everyone who can open the portal can
- * read it.
+ * @return {Object} { ok, blocks:[{type:'heading'|'para'|'bullet', level, text}],
+ *                    reason, url }
  */
-function loadGuideForClient_() {
-  let data;
-  try { data = getAllData_(SHEET.GUIDE); } catch (e) { return []; }
-  if (!data || data.length < 2) return [];
-  const C = COL.GUIDE, out = [];
-  for (let i = 1; i < data.length; i++) {
-    if (!safeBool(data[i][C.Active])) continue;
-    const heading = safeStr(data[i][C.Heading]);
-    const body    = safeStr(data[i][C.Body]);
-    if (!heading && !body) continue;          // a blank row is spacing, not content
-    out.push({ order: safeNum(data[i][C.Sort_Order]), heading: heading, body: body });
+function getGuideDoc() {
+  requirePermissions_();                       // portal users only, as everywhere
+
+  const configured = configStr('GUIDE_URL', '');
+  const m = String(configured).match(/\/document\/d\/([A-Za-z0-9_-]+)/);
+  if (!m) {
+    return { ok: false, reason: 'no-url',
+             message: 'No document is configured. Put its address in GUIDE_URL on the ' +
+                      'Config tab of the spreadsheet.' };
   }
-  /* Sorted here rather than trusting sheet order, so inserting a row above another
-     does not silently reorder the guide. Stable on equal Sort_Order. */
-  return out.map(function (r, i) { return { r: r, i: i }; })
-            .sort(function (a, b) { return a.r.order - b.r.order || a.i - b.i; })
-            .map(function (x) { return x.r; });
+  const pubUrl = 'https://docs.google.com/document/d/' + m[1] + '/pub';
+
+  let res;
+  try {
+    res = UrlFetchApp.fetch(pubUrl, { muteHttpExceptions: true, followRedirects: true });
+  } catch (e) {
+    return { ok: false, reason: 'fetch-failed', url: pubUrl,
+             message: 'Could not reach the document: ' + e.message };
+  }
+
+  const code = res.getResponseCode();
+  if (code !== 200) {
+    /* Almost always means the document has not been published. Said plainly with
+       the fix, because "HTTP 404" tells a forecasting analyst nothing. */
+    return { ok: false, reason: 'not-published', url: pubUrl, httpCode: code,
+             message: 'The document is not published to the web (HTTP ' + code + '). ' +
+                      'Open it, then File > Share > Publish to web > Publish.' };
+  }
+
+  const html = res.getContentText();
+
+  /* Narrow to the document body before matching, so Google's own header, footer
+     and style blocks cannot contribute paragraphs. */
+  let scope = html;
+  const inner = html.match(/<div[^>]*class="[^"]*doc-content[^"]*"[^>]*>([\s\S]*)$/i) ||
+                html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+  if (inner) scope = inner[1];
+
+  const blocks = [];
+  /* One pass, in document order, so headings and text stay in sequence. Only
+     block-level elements that carry prose are considered; everything else — tables,
+     images, drawings — is counted and reported rather than silently dropped. */
+  const re = /<(h[1-6]|p|li)\b[^>]*>([\s\S]*?)<\/\1>/gi;
+  let hit;
+  while ((hit = re.exec(scope)) !== null) {
+    const tag = hit[1].toLowerCase();
+    const text = guideBlockText_(hit[2]);
+    if (!text) continue;                       // Google emits many empty <p> spacers
+    if (tag === 'li')      blocks.push({ type: 'bullet', text: text });
+    else if (tag === 'p')  blocks.push({ type: 'para', text: text });
+    else                   blocks.push({ type: 'heading',
+                                         level: safeInt(tag.charAt(1)), text: text });
+  }
+
+  const tables = (scope.match(/<table\b/gi) || []).length;
+  const images = (scope.match(/<img\b/gi) || []).length;
+
+  return { ok: true, url: configured, publishedUrl: pubUrl, blocks: blocks,
+           skipped: { tables: tables, images: images },
+           fetchedAt: fmtDate(new Date()) };
 }
 
 

@@ -244,7 +244,7 @@ input.bad{border-color:var(--err);background:#FFF6F7}
    =================================================================== */
 var S = {
   user:null, ref:{}, carriers:[], methods:[], surchargeTypes:[],
-  calendar:[], hlIds:[], mdIds:[], scenarios:[], config:{}, status:{}, guide:[],
+  calendar:[], hlIds:[], mdIds:[], scenarios:[], config:{}, status:{},
   rateBase:[], rateSurcharge:[], mixMethod:[], mixLP:[], mixCC:[],
   output:[], validation:[], recentAudit:[], actuals:[], snapshots:[],
   screen:'dashboard', loaded:false,
@@ -728,7 +728,6 @@ function boot(){
     S.methods=init.methods; S.surchargeTypes=init.surchargeTypes;
     S.calendar=init.calendar; S.hlIds=init.highLevelIds; S.mdIds=init.modellingIds;
     S.scenarios=init.scenarios; S.config=init.config; S.status=init.status;
-    S.guide=init.guide||[];
     S.sel.hlId = S.hlIds.length ? S.hlIds[0].id : null;
     S.sel.asAt = S.config.horizonStart;
 
@@ -953,7 +952,7 @@ function renderAll(){
   host.innerHTML='<div class="screen on">'+(fns[S.screen]||viewDashboard)()+'</div>';
   var after={rates:wireRates,mixes:wireMixes,output:wireOutput,
              dashboard:wireDashboard,validation:wireValidation,admin:wireAdmin,
-             actuals:wireActuals,history:wireHistory};
+             actuals:wireActuals,history:wireHistory,guide:wireGuide};
   if(after[S.screen]) after[S.screen]();
 }
 function loading(){ return '<div class="load"><span class="spinner"></span>Loading…</div>'; }
@@ -1023,82 +1022,114 @@ function guideLink(){
    for a long document.
    =================================================================== */
 
-/**
- * One Body cell into paragraphs and bullet lists.
- *
- * EVERY piece of text goes through esc() first, without exception. The Guide tab is
- * editable by anyone with access to the spreadsheet, and this renders into the
- * browser of everyone who opens the portal — so unescaped content here would turn
- * "can edit a spreadsheet" into "can run script in everybody's session". The only
- * HTML in the output is the tags this function writes itself.
- *
- * The markup understood is deliberately tiny, because anything larger becomes a
- * format people have to learn and get wrong: a blank line starts a new paragraph,
- * and a line beginning "- " is a bullet. That is all.
- */
-function guideBody(text){
-  var out='', list=null;
-  String(text).replace(/\r\n?/g,'\n').split('\n').forEach(function(raw){
-    var line=raw.trim();
-    if(line===''){
-      if(list){ out+='<ul style="margin:6px 0 6px 18px">'+list+'</ul>'; list=null; }
-      return;
-    }
-    if(/^[-*]\s+/.test(line)){
-      list=(list||'')+'<li style="margin:2px 0">'+esc(line.replace(/^[-*]\s+/,''))+'</li>';
-      return;
-    }
-    if(list){ out+='<ul style="margin:6px 0 6px 18px">'+list+'</ul>'; list=null; }
-    out+='<p style="margin:0 0 8px">'+esc(line)+'</p>';
-  });
-  if(list) out+='<ul style="margin:6px 0 6px 18px">'+list+'</ul>';
-  return out;
-}
+/* Held here rather than re-fetched on every render, because renderAll() runs on
+   many unrelated state changes and each one would otherwise mean another HTTP call
+   out to Google Docs. Fetched once per visit to the tab, with a Refresh button for
+   when the document has just been edited. */
+var guideDoc=null;
 
 function viewGuide(){
-  var blocks=(S.guide||[]);
   var url=(S.config&&S.config.guideUrl)||'';
   var hasLink=/^https?:\/\//i.test(url);
-
-  var h='';
-
-  if(!blocks.length){
-    h+='<div class="card"><h2>Postage Forecast Guide</h2><div class="body">';
-    h+='<div class="empty">The guide is empty.<br><br><span class="small">'+
-       'Its text lives on the <strong>Guide</strong> tab of the spreadsheet — one row '+
-       'per block, with an optional <code>Heading</code>, the <code>Body</code>, and '+
-       '<code>Active</code> ticked. Set <code>Sort_Order</code> to control the order. '+
-       'Whatever is written there appears here on the next reload.'+
-       (hasLink?'':' Run <code>setupCreateAllTabs()</code> once if the tab is not there yet.')+
-       '</span></div>';
-    if(hasLink){
-      h+='<div class="small muted" style="margin-top:10px">'+
-         '<a href="'+esc(url)+'" target="_blank" rel="noopener" '+
-         'style="color:var(--brand);text-decoration:underline">Open the guide document</a>'+
-         ' in the meantime.</div>';
-    }
-    h+='</div></div>';
-    return h;
-  }
-
-  /* Narrower than the data screens on purpose. This is prose, and prose set to the
-     full width of a 1600px monitor is unreadable. */
-  h+='<div style="max-width:820px">';
-  blocks.forEach(function(b){
-    h+='<div class="card">';
-    if(b.heading) h+='<h2>'+esc(b.heading)+'</h2>';
-    if(b.body) h+='<div class="body" style="font-size:13px;color:var(--ink-2);'+
-                  'line-height:1.55">'+guideBody(b.body)+'</div>';
-    h+='</div>';
-  });
-  if(hasLink){
-    h+='<div class="card"><div class="body small muted">'+
-       'This text is maintained on the <strong>Guide</strong> tab of the spreadsheet. '+
-       'The fuller document is <a href="'+esc(url)+'" target="_blank" rel="noopener" '+
-       'style="color:var(--brand);text-decoration:underline">here</a>.</div></div>';
-  }
-  h+='</div>';
+  var h='<div style="max-width:820px"><div class="card"><div class="body">'+
+        '<div class="row" style="margin:0;align-items:center">'+
+        '<button class="btn sm" id="gRefresh">Refresh</button>'+
+        '<span class="small muted" style="align-self:center">Read from the published '+
+        'document. Edits in Google Docs appear here when you refresh.</span>';
+  if(hasLink) h+='<span style="margin-left:auto"><a href="'+esc(url)+'" target="_blank" '+
+     'rel="noopener" class="small" style="color:var(--brand);text-decoration:underline">'+
+     'Open in Google Docs</a></span>';
+  h+='</div></div></div><div id="gHost">'+loading()+'</div></div>';
   return h;
+}
+
+function wireGuide(){
+  var b=document.getElementById('gRefresh');
+  if(b) b.onclick=function(){ guideDoc=null; loadGuide(); };
+  if(guideDoc) renderGuide(); else loadGuide();
+}
+
+function loadGuide(){
+  var host=document.getElementById('gHost'); if(!host) return;
+  host.innerHTML='<div class="card"><div class="body">'+loading()+'</div></div>';
+  call('getGuideDoc',[],function(r){ guideDoc=r; renderGuide(); },
+    function(m){ host.innerHTML='<div class="card"><div class="empty">'+esc(m)+
+      '</div></div>'; },true);
+}
+
+/**
+ * Render the document's blocks as portal text.
+ *
+ * Everything arrives from the server as PLAIN TEXT — the server strips every tag
+ * and decodes every entity — and every piece of it goes back through esc() here.
+ * A published document is world-readable and therefore world-editable by whoever
+ * owns it, so its content is treated as untrusted: the only HTML on this screen is
+ * what this function writes.
+ */
+function renderGuide(){
+  var host=document.getElementById('gHost'); if(!host||!guideDoc) return;
+  var g=guideDoc;
+
+  if(!g.ok){
+    var fix='';
+    if(g.reason==='not-published'){
+      fix='<br><br><span class="small">The document has to be published for the portal '+
+          'to read it: open it, then <strong>File > Share > Publish to web > '+
+          'Publish</strong>. Note that a published document is readable by anyone with '+
+          'the link, including outside HeliosX.</span>';
+    }
+    host.innerHTML='<div class="card"><div class="empty">'+esc(g.message||'The guide '+
+      'could not be read.')+fix+'</div></div>';
+    return;
+  }
+
+  if(!g.blocks.length){
+    host.innerHTML='<div class="card"><div class="empty">The document is published but '+
+      'appears to be empty.</div></div>';
+    return;
+  }
+
+  /* One card, so the document reads as a document rather than as a stack of
+     unrelated panels. Headings inside it carry the structure. */
+  var h='<div class="card"><div class="body" style="font-size:13px;color:var(--ink-2);'+
+        'line-height:1.6;padding:18px 20px">';
+  var list=null;
+  function closeList(){ if(list){ h+='<ul style="margin:6px 0 12px 20px">'+list+'</ul>';
+    list=null; } }
+
+  g.blocks.forEach(function(b){
+    if(b.type==='bullet'){
+      list=(list||'')+'<li style="margin:3px 0">'+esc(b.text)+'</li>';
+      return;
+    }
+    closeList();
+    if(b.type==='heading'){
+      /* Google's heading levels mapped to two sizes. Six distinct sizes in a
+         reference page is noise, and the document's own hierarchy rarely goes
+         deeper than two in practice. */
+      var big=(b.level||1)<=2;
+      h+='<div style="font-size:'+(big?'15px':'13px')+';font-weight:500;'+
+         'color:var(--ink);margin:'+(big?'20px 0 8px':'16px 0 6px')+'">'+
+         esc(b.text)+'</div>';
+      return;
+    }
+    h+='<p style="margin:0 0 10px">'+esc(b.text)+'</p>';
+  });
+  closeList();
+  h+='</div></div>';
+
+  /* Said once, at the bottom, because it is a limitation of reading a document as
+     text and not something a reader should have to guess at from a gap. */
+  var sk=g.skipped||{};
+  if(sk.tables||sk.images){
+    h+='<div class="card"><div class="body small muted">Not shown here: '+
+       (sk.tables?sk.tables+' table'+(sk.tables===1?'':'s'):'')+
+       (sk.tables&&sk.images?' and ':'')+
+       (sk.images?sk.images+' image'+(sk.images===1?'':'s'):'')+
+       '. This screen renders the document\'s text only — open it in Google Docs to '+
+       'see those.</div></div>';
+  }
+  host.innerHTML=h;
 }
 
 function viewDashboard(){
