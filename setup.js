@@ -241,6 +241,8 @@ function seedConfigRows_() {
     ['VALIDATION_BLOCKS_PUBLISH', 'TRUE',       'Block publishing when validation returns ERROR'],
     ['ENGINE_VERSION',            ENGINE_VERSION, 'Version stamped onto each calculation run'],
     ['REPORTING_CURRENCY',        'GBP',        'Label only — no FX conversion is applied'],
+    ['GUIDE_URL',                 'https://docs.google.com/document/d/1ajXraZ2XjONizuhw3FnK-FGvhnCfZftBnPpxKl6smjg/edit',
+                                                'Postage Forecast Guide, linked from the Dashboard. Blank hides the link'],
     ['BOOTSTRAP_OWNER_EMAIL',     '',           'Escape hatch: this email always has ADMIN'],
     ['SCOPE_DEFAULT_ALLOW',       'TRUE',       'What a user with no Scope_Mapping rows can see. TRUE = everything'],
     ['METABASE_URL',              '',           'e.g. https://metabase.heliosx.co — leave blank until tested'],

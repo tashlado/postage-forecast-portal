@@ -128,7 +128,11 @@ function initApp() {
       horizonMonths: configInt('HORIZON_MONTHS', 36),
       openEndedDate: configDate('OPEN_ENDED_DATE', OPEN_ENDED_DATE),
       autoCalc:      configBool('AUTO_CALC_ON_WRITE', false),
-      engineVersion: configStr('ENGINE_VERSION', ENGINE_VERSION)
+      engineVersion: configStr('ENGINE_VERSION', ENGINE_VERSION),
+      /* A link, not a hardcoded URL, so the guide can be moved or replaced in the
+         Config tab without a deploy. Empty means the dashboard shows nothing —
+         a missing guide should leave no trace rather than a dead link. */
+      guideUrl:      configStr('GUIDE_URL', '')
     },
     status: loadStatus_()
   };

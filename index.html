@@ -957,9 +957,40 @@ function loading(){ return '<div class="load"><span class="spinner"></span>Loadi
 /* ===================================================================
    Dashboard
    =================================================================== */
+/**
+ * The guide link, or nothing at all.
+ *
+ * target="_blank" is not a preference, it is the only thing that makes this work.
+ * An Apps Script web app is served inside a sandbox iframe, so a same-frame link
+ * navigates the iframe rather than the tab — and Google Docs refuses to be framed,
+ * so the panel would go blank with no error a user could act on. rel="noopener"
+ * goes with it: without it the opened tab gets a window.opener handle back into
+ * this one.
+ *
+ * The URL comes from Config GUIDE_URL, so the doc can move without a deploy, and
+ * an empty value renders nothing — a missing guide should leave no trace rather
+ * than a dead link. It is escaped like any other value: Config is editable by
+ * anyone with sheet access, which makes it untrusted input for this purpose.
+ */
+function guideLink(){
+  var url=(S.config&&S.config.guideUrl)||'';
+  if(!url) return '';
+  /* Only http(s). A javascript: or data: URL in a Config cell would otherwise
+     become a script that runs for every user who opens the dashboard. */
+  if(!/^https?:\/\//i.test(url)) return '';
+  return '<div class="card"><div class="body" style="padding:12px 14px">'+
+         '<span style="font-size:13px">Postage Forecast Guide: </span>'+
+         '<a href="'+esc(url)+'" target="_blank" rel="noopener" '+
+         'style="font-size:13px;color:var(--brand);text-decoration:underline">'+
+         'open the guide</a>'+
+         '<span class="small muted" style="margin-left:8px">(opens in a new tab)</span>'+
+         '</div></div>';
+}
+
 function viewDashboard(){
   var last=S.status&&S.status.lastRun;
   var h='';
+  h+=guideLink();
   h+='<div class="grid2">';
   h+='<div class="card"><h2>Forecast status</h2><div class="body">';
   if(last){
