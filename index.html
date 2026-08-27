@@ -244,7 +244,7 @@ input.bad{border-color:var(--err);background:#FFF6F7}
    =================================================================== */
 var S = {
   user:null, ref:{}, carriers:[], methods:[], surchargeTypes:[],
-  calendar:[], hlIds:[], mdIds:[], scenarios:[], config:{}, status:{},
+  calendar:[], hlIds:[], mdIds:[], scenarios:[], config:{}, status:{}, guide:[],
   rateBase:[], rateSurcharge:[], mixMethod:[], mixLP:[], mixCC:[],
   output:[], validation:[], recentAudit:[], actuals:[], snapshots:[],
   screen:'dashboard', loaded:false,
@@ -728,6 +728,7 @@ function boot(){
     S.methods=init.methods; S.surchargeTypes=init.surchargeTypes;
     S.calendar=init.calendar; S.hlIds=init.highLevelIds; S.mdIds=init.modellingIds;
     S.scenarios=init.scenarios; S.config=init.config; S.status=init.status;
+    S.guide=init.guide||[];
     S.sel.hlId = S.hlIds.length ? S.hlIds[0].id : null;
     S.sel.asAt = S.config.horizonStart;
 
@@ -991,80 +992,112 @@ function guideLink(){
 }
 
 /* ===================================================================
-   Guide — the Google Doc, embedded live
+   Guide — the portal's own text, from the Guide tab of the spreadsheet
    -------------------------------------------------------------------
-   Embedded rather than copied, so editing the doc updates the portal with no
-   deploy and no import step. There is no cache in front of it: the doc is
-   fetched by the browser when the tab is opened, so "live" means live.
+   Rendered as portal content rather than embedded as a document, and sourced from
+   the spreadsheet rather than from Google Docs. That combination avoids every
+   problem the two document-based approaches had.
 
-   Three ways to do this were possible and this is the cheapest correct one.
+   An iframe of the doc's /preview URL worked without a new OAuth scope, but it is
+   a document sitting in a box: it cannot be styled to match anything, its width
+   and typography are its own, and whether Google will serve it inside a nested
+   iframe at all depends on headers that cannot be checked from outside a browser.
 
-   Reading the doc server-side — DocumentApp, or a Drive HTML export through
-   UrlFetchApp — would let the content be styled to match the portal, but it needs
-   an OAuth scope this project does not have (documents.readonly or
-   drive.readonly). Adding a scope forces every user to re-authorise before the
-   portal will load for them again, which is a lot of disruption for a reference
-   page. It would also need caching to avoid a fetch on every page load, and a
-   cache is the thing that makes "live" stop being true.
+   Reading the doc server-side — DocumentApp, or a Drive HTML export — would give
+   text that can be styled, at the price of an OAuth scope this project does not
+   have. Adding one forces EVERY user to re-authorise before the portal will load
+   for them again, and it would need a cache, which is the thing that stops "live"
+   being true.
 
-   Publishing the doc to the web would avoid the scope, but File > Publish to web
-   makes it readable by anyone with the link, outside the domain. That is a
-   sharing decision with consequences well beyond this tab and not one to make as
-   a side effect of adding a page.
+   The spreadsheet needs neither. The spreadsheets scope is already granted, so
+   nobody re-authorises; the sheet is already readable by everyone who can open the
+   portal, so nothing has to be shared or published; and it is genuinely live,
+   because initApp reads it on every page load with no cache in front of it.
 
-   So: the /preview URL in an iframe. No new scope, nothing re-authorised, nothing
-   published, and permissions stay exactly where they are — each viewer needs
-   access to the doc in their own right, which is the correct default for a
-   document somebody owns.
+   One row is one block: an optional Heading and a Body. Sort_Order decides the
+   order, Active hides a row without deleting it. Editing the guide is editing a
+   spreadsheet, which is what everyone maintaining this forecast already does.
 
-   The cost is that this cannot be verified from a terminal. Whether Google serves
-   /preview inside a nested iframe is a matter of the headers it returns, so the
-   fallback link is not decoration: if the frame comes up blank, that link is the
-   whole feature and it is placed above the frame where it will be seen.
+   The document link is kept, when GUIDE_URL is set, as a pointer to the fuller
+   version — the tab is a summary that lives where the work does, not a replacement
+   for a long document.
    =================================================================== */
 
-/** The document ID out of any normal Docs URL, or '' if it is not one. */
-function guideDocId(){
-  var url=(S.config&&S.config.guideUrl)||'';
-  var m=String(url).match(/\/document\/d\/([A-Za-z0-9_-]+)/);
-  return m?m[1]:'';
+/**
+ * One Body cell into paragraphs and bullet lists.
+ *
+ * EVERY piece of text goes through esc() first, without exception. The Guide tab is
+ * editable by anyone with access to the spreadsheet, and this renders into the
+ * browser of everyone who opens the portal — so unescaped content here would turn
+ * "can edit a spreadsheet" into "can run script in everybody's session". The only
+ * HTML in the output is the tags this function writes itself.
+ *
+ * The markup understood is deliberately tiny, because anything larger becomes a
+ * format people have to learn and get wrong: a blank line starts a new paragraph,
+ * and a line beginning "- " is a bullet. That is all.
+ */
+function guideBody(text){
+  var out='', list=null;
+  String(text).replace(/\r\n?/g,'\n').split('\n').forEach(function(raw){
+    var line=raw.trim();
+    if(line===''){
+      if(list){ out+='<ul style="margin:6px 0 6px 18px">'+list+'</ul>'; list=null; }
+      return;
+    }
+    if(/^[-*]\s+/.test(line)){
+      list=(list||'')+'<li style="margin:2px 0">'+esc(line.replace(/^[-*]\s+/,''))+'</li>';
+      return;
+    }
+    if(list){ out+='<ul style="margin:6px 0 6px 18px">'+list+'</ul>'; list=null; }
+    out+='<p style="margin:0 0 8px">'+esc(line)+'</p>';
+  });
+  if(list) out+='<ul style="margin:6px 0 6px 18px">'+list+'</ul>';
+  return out;
 }
 
 function viewGuide(){
+  var blocks=(S.guide||[]);
   var url=(S.config&&S.config.guideUrl)||'';
-  var ok=/^https?:\/\//i.test(url);
+  var hasLink=/^https?:\/\//i.test(url);
 
-  if(!ok){
-    return '<div class="card"><h2>Postage Forecast Guide</h2><div class="body">'+
-      '<div class="empty">No guide is configured.<br><br><span class="small">'+
-      'Set <code>GUIDE_URL</code> on the Config tab of the spreadsheet to the '+
-      'document\'s address. It appears here and on the Dashboard as soon as it is '+
-      'set, and hides itself again if it is cleared.</span></div></div></div>';
-  }
+  var h='';
 
-  var id=guideDocId();
-  var h='<div class="card"><h2>Postage Forecast Guide</h2><div class="body">';
-  /* Above the frame, not below it. If the embed is blank this is the only way
-     through, and a link underneath an empty box does not get found. */
-  h+='<div class="small muted" style="margin-bottom:10px">Live view of the '+
-     'document — edits made in Google Docs show here on reload. '+
-     '<a href="'+esc(url)+'" target="_blank" rel="noopener" '+
-     'style="color:var(--brand);text-decoration:underline">Open in Google Docs</a>'+
-     ' to edit, or if the panel below is empty.</div>';
-
-  if(!id){
-    h+='<div class="empty">That address is not a Google Doc, so it cannot be shown '+
-       'here. Use the link above.</div></div></div>';
+  if(!blocks.length){
+    h+='<div class="card"><h2>Postage Forecast Guide</h2><div class="body">';
+    h+='<div class="empty">The guide is empty.<br><br><span class="small">'+
+       'Its text lives on the <strong>Guide</strong> tab of the spreadsheet — one row '+
+       'per block, with an optional <code>Heading</code>, the <code>Body</code>, and '+
+       '<code>Active</code> ticked. Set <code>Sort_Order</code> to control the order. '+
+       'Whatever is written there appears here on the next reload.'+
+       (hasLink?'':' Run <code>setupCreateAllTabs()</code> once if the tab is not there yet.')+
+       '</span></div>';
+    if(hasLink){
+      h+='<div class="small muted" style="margin-top:10px">'+
+         '<a href="'+esc(url)+'" target="_blank" rel="noopener" '+
+         'style="color:var(--brand);text-decoration:underline">Open the guide document</a>'+
+         ' in the meantime.</div>';
+    }
+    h+='</div></div>';
     return h;
   }
 
-  /* /preview rather than /edit: the editor chrome is useless at this size and
-     /preview is the form Google intends to be embedded. */
-  h+='<iframe src="https://docs.google.com/document/d/'+esc(id)+'/preview" '+
-     'style="width:100%;height:calc(100vh - 260px);min-height:420px;border:1px solid '+
-     'var(--line);border-radius:8px;background:var(--surface)" '+
-     'title="Postage Forecast Guide"></iframe>';
-  h+='</div></div>';
+  /* Narrower than the data screens on purpose. This is prose, and prose set to the
+     full width of a 1600px monitor is unreadable. */
+  h+='<div style="max-width:820px">';
+  blocks.forEach(function(b){
+    h+='<div class="card">';
+    if(b.heading) h+='<h2>'+esc(b.heading)+'</h2>';
+    if(b.body) h+='<div class="body" style="font-size:13px;color:var(--ink-2);'+
+                  'line-height:1.55">'+guideBody(b.body)+'</div>';
+    h+='</div>';
+  });
+  if(hasLink){
+    h+='<div class="card"><div class="body small muted">'+
+       'This text is maintained on the <strong>Guide</strong> tab of the spreadsheet. '+
+       'The fuller document is <a href="'+esc(url)+'" target="_blank" rel="noopener" '+
+       'style="color:var(--brand);text-decoration:underline">here</a>.</div></div>';
+  }
+  h+='</div>';
   return h;
 }
 

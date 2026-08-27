@@ -98,7 +98,7 @@ function initApp() {
     SHEET.PERMISSIONS, SHEET.PORTAL_ROLES, SHEET.SCOPE_MAPPING, SHEET.CONFIG,
     SHEET.DIM_REFERENCE, SHEET.DIM_CARRIER, SHEET.DIM_METHOD, SHEET.DIM_SURCHARGE,
     SHEET.DIM_CALENDAR, SHEET.HIGH_LEVEL_IDS, SHEET.MODELLING_IDS,
-    SHEET.SCENARIOS, SHEET.CALC_RUNS, SHEET.AUDIT_LOG
+    SHEET.SCENARIOS, SHEET.CALC_RUNS, SHEET.AUDIT_LOG, SHEET.GUIDE
   ]);
   perfMark('init: sheets fetched');
 
@@ -134,6 +134,7 @@ function initApp() {
          a missing guide should leave no trace rather than a dead link. */
       guideUrl:      configStr('GUIDE_URL', '')
     },
+    guide: loadGuideForClient_(),
     status: loadStatus_()
   };
   perfMark('init: payload built');
@@ -279,6 +280,39 @@ function loadHighLevelIdsForClient_(perms, visible) {
   }
   return out.sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id);
 }
+
+/**
+ * The Guide tab's blocks, in order.
+ *
+ * Reads through getAllData_, so a tab that does not exist yet returns nothing
+ * rather than throwing — the Guide screen then explains how to fill it in, and
+ * initApp is not brought down by a missing reference tab. That matters more than
+ * it looks: initApp is the first call the page makes, so anything that throws here
+ * takes the whole portal with it.
+ *
+ * No permission check beyond the portal's own: this is documentation, and it is
+ * held in the spreadsheet precisely so that everyone who can open the portal can
+ * read it.
+ */
+function loadGuideForClient_() {
+  let data;
+  try { data = getAllData_(SHEET.GUIDE); } catch (e) { return []; }
+  if (!data || data.length < 2) return [];
+  const C = COL.GUIDE, out = [];
+  for (let i = 1; i < data.length; i++) {
+    if (!safeBool(data[i][C.Active])) continue;
+    const heading = safeStr(data[i][C.Heading]);
+    const body    = safeStr(data[i][C.Body]);
+    if (!heading && !body) continue;          // a blank row is spacing, not content
+    out.push({ order: safeNum(data[i][C.Sort_Order]), heading: heading, body: body });
+  }
+  /* Sorted here rather than trusting sheet order, so inserting a row above another
+     does not silently reorder the guide. Stable on equal Sort_Order. */
+  return out.map(function (r, i) { return { r: r, i: i }; })
+            .sort(function (a, b) { return a.r.order - b.r.order || a.i - b.i; })
+            .map(function (x) { return x.r; });
+}
+
 
 function loadModellingIdsForClient_(perms, visible) {
   const data = getAllData_(SHEET.MODELLING_IDS), C = COL.MODELLING_IDS, out = [];
