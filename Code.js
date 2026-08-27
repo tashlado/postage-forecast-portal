@@ -333,14 +333,39 @@ function guideBlockText_(html) {
 function getGuideDoc() {
   requirePermissions_();                       // portal users only, as everywhere
 
+  /* TWO addresses, because a published Google Doc has two and neither can be
+     derived from the other. Publishing mints a separate opaque ID — the
+     /document/d/e/2PACX-.../pub form — which has no relationship to the file ID in
+     the /edit address. An earlier version of this function built the published URL
+     out of the file ID, which cannot work, and reported the result as "you have not
+     published it" — sending someone to re-check a step they had already done
+     correctly. So the published address is now stored, not computed.
+
+       GUIDE_PUB_URL   what the portal fetches. Copy it out of the Publish to web
+                       dialog; it is the only place it appears.
+       GUIDE_URL       the /edit address, for the "Open in Google Docs" links. */
   const configured = configStr('GUIDE_URL', '');
-  const m = String(configured).match(/\/document\/d\/([A-Za-z0-9_-]+)/);
-  if (!m) {
-    return { ok: false, reason: 'no-url',
-             message: 'No document is configured. Put its address in GUIDE_URL on the ' +
-                      'Config tab of the spreadsheet.' };
+  let pubUrl = configStr('GUIDE_PUB_URL', '');
+
+  /* Forgiving about which key holds which: if the published address was pasted
+     into GUIDE_URL, use it rather than complaining about a missing key. */
+  if (!pubUrl && /\/document\/d\/e\/[A-Za-z0-9_-]+\/pub/.test(configured)) {
+    pubUrl = configured;
   }
-  const pubUrl = 'https://docs.google.com/document/d/' + m[1] + '/pub';
+
+  if (!pubUrl) {
+    return { ok: false, reason: 'no-pub-url',
+             message: 'The portal does not have the document\'s PUBLISHED address, which ' +
+                      'is different from its normal one and cannot be worked out from it. ' +
+                      'In the document: File > Share > Publish to web > Publish, then copy ' +
+                      'the address it shows — it looks like ' +
+                      'docs.google.com/document/d/e/2PACX-.../pub — into GUIDE_PUB_URL on ' +
+                      'the Config tab.' };
+  }
+  if (!/^https:\/\/docs\.google\.com\/document\/d\//.test(pubUrl)) {
+    return { ok: false, reason: 'bad-pub-url',
+             message: 'GUIDE_PUB_URL is not a Google Docs address: ' + pubUrl };
+  }
 
   let res;
   try {
@@ -352,21 +377,34 @@ function getGuideDoc() {
 
   const code = res.getResponseCode();
   if (code !== 200) {
-    /* Almost always means the document has not been published. Said plainly with
-       the fix, because "HTTP 404" tells a forecasting analyst nothing. */
-    return { ok: false, reason: 'not-published', url: pubUrl, httpCode: code,
-             message: 'The document is not published to the web (HTTP ' + code + '). ' +
-                      'Open it, then File > Share > Publish to web > Publish.' };
+    /* Now that the address is stored rather than computed, a non-200 means the
+       address is wrong or publishing was stopped — not "you never published it". */
+    return { ok: false, reason: 'fetch-status', url: pubUrl, httpCode: code,
+             message: 'The published address returned HTTP ' + code + '. Either ' +
+                      'publishing has been stopped, or GUIDE_PUB_URL is not the address ' +
+                      'the Publish to web dialog shows. The address tried was: ' + pubUrl };
   }
 
   const html = res.getContentText();
 
-  /* Narrow to the document body before matching, so Google's own header, footer
-     and style blocks cannot contribute paragraphs. */
+  /* Narrow to the content before matching, so Google's header, footer, banner and
+     style blocks cannot contribute paragraphs.
+
+     #contents is tried FIRST and matters for exactly this case: in a published
+     document doc-content is a class on <body>, not on a div, so the div rule below
+     misses and the body rule would swallow the header and footer with it. */
   let scope = html;
-  const inner = html.match(/<div[^>]*class="[^"]*doc-content[^"]*"[^>]*>([\s\S]*)$/i) ||
+  const inner = html.match(/<div[^>]*\bid="contents"[^>]*>([\s\S]*)$/i) ||
+                html.match(/<div[^>]*class="[^"]*doc-content[^"]*"[^>]*>([\s\S]*)$/i) ||
                 html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
   if (inner) scope = inner[1];
+
+  /* Those patterns run to the end of the string, because the content div's own
+     closing tag cannot be found by regex once the document nests divs — which it
+     does, for every list and table. Taking everything after the opening tag leaves
+     the FOOTER attached, and a footer paragraph then reads as the last line of the
+     guide. So the tail is cut explicitly. */
+  scope = scope.split(/<div[^>]*\bid="(?:footer|footers)"/i)[0];
 
   const blocks = [];
   /* One pass, in document order, so headings and text stay in sequence. Only

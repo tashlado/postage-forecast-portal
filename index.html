@@ -1072,11 +1072,13 @@ function renderGuide(){
 
   if(!g.ok){
     var fix='';
-    if(g.reason==='not-published'){
-      fix='<br><br><span class="small">The document has to be published for the portal '+
-          'to read it: open it, then <strong>File > Share > Publish to web > '+
-          'Publish</strong>. Note that a published document is readable by anyone with '+
-          'the link, including outside HeliosX.</span>';
+    if(g.reason==='no-pub-url'){
+      fix='<br><br><span class="small">The published address is <strong>not</strong> the '+
+          'same as the document\'s normal address and cannot be worked out from it — '+
+          'publishing creates a separate one that looks like '+
+          '<code>docs.google.com/document/d/e/2PACX-.../pub</code>. Copy it out of the '+
+          '<strong>Publish to web</strong> dialog into <code>GUIDE_PUB_URL</code> on the '+
+          'Config tab.</span>';
     }
     host.innerHTML='<div class="card"><div class="empty">'+esc(g.message||'The guide '+
       'could not be read.')+fix+'</div></div>';
