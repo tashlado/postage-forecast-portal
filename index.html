@@ -264,7 +264,10 @@ var TABS = [
   ['actuals','Actuals',null],
   ['admin','Lookups','editStructure'],
   ['history','History','viewAudit'],
-  ['validation','Checks',null]
+  ['validation','Checks',null],
+  /* Last because it is reference material, not a step in the work. The order of
+     everything above it was chosen deliberately and is left alone. */
+  ['guide','Guide',null]
 ];
 
 /* ===================================================================
@@ -945,7 +948,7 @@ function renderAll(){
   var host=document.getElementById('screens');
   var fns={dashboard:viewDashboard,rates:viewRates,mixes:viewMixes,
            validation:viewValidation,output:viewOutput,history:viewHistory,
-           admin:viewAdmin,actuals:viewActuals};
+           admin:viewAdmin,actuals:viewActuals,guide:viewGuide};
   host.innerHTML='<div class="screen on">'+(fns[S.screen]||viewDashboard)()+'</div>';
   var after={rates:wireRates,mixes:wireMixes,output:wireOutput,
              dashboard:wireDashboard,validation:wireValidation,admin:wireAdmin,
@@ -985,6 +988,84 @@ function guideLink(){
          'open the guide</a>'+
          '<span class="small muted" style="margin-left:8px">(opens in a new tab)</span>'+
          '</div></div>';
+}
+
+/* ===================================================================
+   Guide — the Google Doc, embedded live
+   -------------------------------------------------------------------
+   Embedded rather than copied, so editing the doc updates the portal with no
+   deploy and no import step. There is no cache in front of it: the doc is
+   fetched by the browser when the tab is opened, so "live" means live.
+
+   Three ways to do this were possible and this is the cheapest correct one.
+
+   Reading the doc server-side — DocumentApp, or a Drive HTML export through
+   UrlFetchApp — would let the content be styled to match the portal, but it needs
+   an OAuth scope this project does not have (documents.readonly or
+   drive.readonly). Adding a scope forces every user to re-authorise before the
+   portal will load for them again, which is a lot of disruption for a reference
+   page. It would also need caching to avoid a fetch on every page load, and a
+   cache is the thing that makes "live" stop being true.
+
+   Publishing the doc to the web would avoid the scope, but File > Publish to web
+   makes it readable by anyone with the link, outside the domain. That is a
+   sharing decision with consequences well beyond this tab and not one to make as
+   a side effect of adding a page.
+
+   So: the /preview URL in an iframe. No new scope, nothing re-authorised, nothing
+   published, and permissions stay exactly where they are — each viewer needs
+   access to the doc in their own right, which is the correct default for a
+   document somebody owns.
+
+   The cost is that this cannot be verified from a terminal. Whether Google serves
+   /preview inside a nested iframe is a matter of the headers it returns, so the
+   fallback link is not decoration: if the frame comes up blank, that link is the
+   whole feature and it is placed above the frame where it will be seen.
+   =================================================================== */
+
+/** The document ID out of any normal Docs URL, or '' if it is not one. */
+function guideDocId(){
+  var url=(S.config&&S.config.guideUrl)||'';
+  var m=String(url).match(/\/document\/d\/([A-Za-z0-9_-]+)/);
+  return m?m[1]:'';
+}
+
+function viewGuide(){
+  var url=(S.config&&S.config.guideUrl)||'';
+  var ok=/^https?:\/\//i.test(url);
+
+  if(!ok){
+    return '<div class="card"><h2>Postage Forecast Guide</h2><div class="body">'+
+      '<div class="empty">No guide is configured.<br><br><span class="small">'+
+      'Set <code>GUIDE_URL</code> on the Config tab of the spreadsheet to the '+
+      'document\'s address. It appears here and on the Dashboard as soon as it is '+
+      'set, and hides itself again if it is cleared.</span></div></div></div>';
+  }
+
+  var id=guideDocId();
+  var h='<div class="card"><h2>Postage Forecast Guide</h2><div class="body">';
+  /* Above the frame, not below it. If the embed is blank this is the only way
+     through, and a link underneath an empty box does not get found. */
+  h+='<div class="small muted" style="margin-bottom:10px">Live view of the '+
+     'document — edits made in Google Docs show here on reload. '+
+     '<a href="'+esc(url)+'" target="_blank" rel="noopener" '+
+     'style="color:var(--brand);text-decoration:underline">Open in Google Docs</a>'+
+     ' to edit, or if the panel below is empty.</div>';
+
+  if(!id){
+    h+='<div class="empty">That address is not a Google Doc, so it cannot be shown '+
+       'here. Use the link above.</div></div></div>';
+    return h;
+  }
+
+  /* /preview rather than /edit: the editor chrome is useless at this size and
+     /preview is the form Google intends to be embedded. */
+  h+='<iframe src="https://docs.google.com/document/d/'+esc(id)+'/preview" '+
+     'style="width:100%;height:calc(100vh - 260px);min-height:420px;border:1px solid '+
+     'var(--line);border-radius:8px;background:var(--surface)" '+
+     'title="Postage Forecast Guide"></iframe>';
+  h+='</div></div>';
+  return h;
 }
 
 function viewDashboard(){
