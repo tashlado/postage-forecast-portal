@@ -1236,3 +1236,79 @@ function diagnoseDuplicateRoutes(hlIdFilter) {
            affectedHighLevelIds: hlIds,
            recommendations: recommend };
 }
+
+
+/**
+ * Dump every Modelling_IDs row for one or more High Level IDs, verbatim.
+ *
+ * Deliberately dumb. diagnoseDuplicateRoutes groups by carrier/method/class and
+ * reported no duplicates for High Level IDs 11 and 12, while the Rates dropdown
+ * shows every Modelling ID twice — so the grouping is asking the wrong question and
+ * the honest next step is to stop inferring and print the rows.
+ *
+ * It also answers two things that grouping cannot:
+ *
+ *   - whether the same Modelling_ID VALUE appears on more than one row, which no
+ *     earlier check looked for and which would put the same ID in the dropdown
+ *     twice however different the rest of the row was
+ *   - whether rows are INACTIVE, because loadModellingIdsForClient_ does not filter
+ *     on Active and neither does the dropdown that reads it, so a soft-deleted
+ *     route is still offered for rate editing
+ *
+ * @param {string=} hlIds  comma-separated, e.g. '11,12'. Default '11,12'.
+ */
+function dumpModellingIds(hlIds) {
+  requireMaintenance_();
+  Logger.log('=== Modelling_IDs, raw (read-only) ===');
+  prewarmSheetCache_([SHEET.MODELLING_IDS, SHEET.PERMISSIONS, SHEET.PORTAL_ROLES,
+                      SHEET.CONFIG]);
+  Logger.log('  spreadsheet : ' + spreadsheetId_());
+
+  const want = {};
+  safeStr(hlIds || '11,12').split(',').forEach(function (s) {
+    const n = safeInt(s); if (n) want[n] = true; });
+  Logger.log('  High Level IDs: ' + Object.keys(want).join(', '));
+
+  const data = getAllData_(SHEET.MODELLING_IDS), M = COL.MODELLING_IDS;
+
+  /* Duplicate ID VALUES across the whole sheet, not just the requested segments —
+     an ID reused elsewhere is worth knowing about wherever it is. */
+  const idCount = {};
+  for (let i = 1; i < data.length; i++) {
+    const id = safeInt(data[i][M.Modelling_ID]);
+    if (id) idCount[id] = (idCount[id] || 0) + 1;
+  }
+  const reused = Object.keys(idCount).filter(function (k) { return idCount[k] > 1; });
+  Logger.log('');
+  Logger.log('--- Modelling_ID values appearing on more than one row, anywhere: ' +
+             reused.length + ' ---');
+  reused.sort(function (a, b) { return safeInt(a) - safeInt(b); }).forEach(function (k) {
+    Logger.log('    ID ' + pad_(k, 6) + '  on ' + idCount[k] + ' rows'); });
+  if (!reused.length) Logger.log('    None — every Modelling_ID is unique in the sheet.');
+
+  Logger.log('');
+  Logger.log('--- rows, in sheet order ---');
+  Logger.log('  ' + pad_('row', 5) + pad_('ID', 7) + pad_('HL', 5) + '  ' +
+             pad_('Carrier', 12) + pad_('Method', 32) + pad_('Class', 8) +
+             pad_('Active', 8) + '  Modelling_Code');
+  let n = 0;
+  for (let i = 1; i < data.length; i++) {
+    const hlId = safeInt(data[i][M.High_Level_ID]);
+    if (!want[hlId]) continue;
+    n++;
+    Logger.log('  ' + pad_(i + 1, 5) + pad_(safeInt(data[i][M.Modelling_ID]), 7) +
+               pad_(hlId, 5) + '  ' +
+               pad_(safeStr(data[i][M.Carrier_Code]), 12) +
+               pad_(safeStr(data[i][M.Method_Code]), 32) +
+               pad_(safeStr(data[i][M.Letter_Parcel]), 8) +
+               pad_(safeBool(data[i][M.Active]) ? 'yes' : 'NO', 8) + '  ' +
+               safeStr(data[i][M.Modelling_Code]));
+  }
+  Logger.log('');
+  Logger.log('  ' + n + ' row(s) for those High Level IDs.');
+  Logger.log('  The Rates dropdown shows every row above whose High Level ID matches,');
+  Logger.log('  INCLUDING ones marked Active = NO — it filters on hlId only. So a whole');
+  Logger.log('  deactivated set would appear as a duplicate of the live one.');
+  Logger.log('  Nothing was written.');
+  return { ok: true, rows: n, reusedIds: reused.map(function (k) { return safeInt(k); }) };
+}
