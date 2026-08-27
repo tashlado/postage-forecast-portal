@@ -3405,3 +3405,277 @@ function setGbFuelWindow(commit) {
 function previewGbFuelWindow() { return setGbFuelWindow(false); }
 /** Apply it. */
 function runGbFuelWindow()     { return setGbFuelWindow(true); }
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// REMOVING DUPLICATED RATE PERIODS
+//
+// Reported as "all delivery methods duplicated for High Level ID 11 and 12". The
+// Rates screen renders one row per record and each carries its own
+// Surcharge_Rate_ID, so a method appearing twice means two real rows in
+// Rate_Surcharge — not a rendering fault. diagnoseDuplicateRoutes ruled out
+// duplicate Modelling_IDs, which is a different thing and was the wrong place to
+// look: routes are fine, PERIODS are doubled.
+//
+// Three cases, and only the first is safe to resolve mechanically:
+//
+//   IDENTICAL     same route, code, dates AND value. One is redundant. The lowest
+//                 ID is kept because it is the original — anything referring to
+//                 this period by ID is more likely to mean that one.
+//   SAME DATES,   same route, code and dates, DIFFERENT value. Refused. Which
+//   DIFFERENT     value is right is a business question, and picking one silently
+//   VALUE         changes a rate.
+//   OVERLAPPING   different but intersecting dates. Refused. Fixing it means
+//                 moving period boundaries, which is period surgery rather than
+//                 deduplication.
+//
+// AND IT IS NOT COSMETIC. Both of the engine's resolvers ADD every row that
+// matches a date — pointInTime_ does `total += r.v`, dayWeighted_ does
+// `total += days * r.v` — so two identical 16% FUEL rows produce 32% fuel for
+// those days. computeModel_ records a RANGE_OVERLAP defect when more than one row
+// matches, so it is not silent, but it returns the summed value regardless. A
+// segment with duplicated periods is forecasting roughly double the surcharge.
+//
+// Validation reports all three cases as RANGE_OVERLAP at ERROR severity
+// (validate.gs ruleRangeIssues_), which is publish-blocking — so the system was
+// not blind to this. What this adds is clearing the safe case in bulk rather than
+// row by row.
+//
+// Deactivation goes through deleteBaseRate / deleteSurchargeRate: a soft delete, so
+// the row survives, its history survives, and it stops reaching the engine —
+// computeModel_ reads active rows only.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const DEDUPE_TABLES_ = 'RATE_BASE,RATE_SURCHARGE';
+
+/**
+ * Find and optionally remove duplicated active rate periods.
+ *
+ * @param {boolean} commit    false (default) reports and writes nothing
+ * @param {number=} hlFilter  optional: one High Level ID only
+ */
+function dedupeRatePeriods(commit, hlFilter) {
+  requireMaintenance_();
+  const t0 = Date.now();
+  Logger.log(commit ? '=== REMOVING DUPLICATE RATE PERIODS (WRITING) ==='
+                    : '=== DUPLICATE RATE PERIODS — PREVIEW (nothing written) ===');
+
+  prewarmSheetCache_([SHEET.RATE_BASE, SHEET.RATE_SURCHARGE, SHEET.RATE_BASE_AMENDS,
+                      SHEET.RATE_SURCHARGE_AMENDS, SHEET.MODELLING_IDS,
+                      SHEET.HIGH_LEVEL_IDS, SHEET.PERMISSIONS, SHEET.PORTAL_ROLES,
+                      SHEET.SCOPE_MAPPING, SHEET.CONFIG]);
+
+  const perms = requirePermissions_();
+  requireEditRates_(perms);
+  const only = safeInt(hlFilter);
+
+  Logger.log('  spreadsheet : ' + spreadsheetId_() + '   <- CHECK THIS IS THE RIGHT FILE');
+  Logger.log('  running as  : ' + perms.email + '  role ' + perms.role);
+  if (only) Logger.log('  restricted to High Level ID ' + only);
+
+  /* Which High Level ID each route belongs to, so findings can be grouped the way
+     the complaint was phrased. */
+  const md = getAllData_(SHEET.MODELLING_IDS), M = COL.MODELLING_IDS;
+  const hlOf = {}, methodOf = {};
+  for (let i = 1; i < md.length; i++) {
+    const id = safeInt(md[i][M.Modelling_ID]);
+    if (!id) continue;
+    hlOf[id] = safeInt(md[i][M.High_Level_ID]);
+    methodOf[id] = normKey(md[i][M.Carrier_Code]) + ' / ' + normKey(md[i][M.Method_Code]);
+  }
+
+  const plan = [], ambiguous = [], overlaps = [];
+
+  DEDUPE_TABLES_.split(',').forEach(function (tableKey) {
+    const t = TABLES[tableKey], C = COL[tableKey];
+    const isBase = tableKey === 'RATE_BASE';
+    const idCol    = isBase ? C.Rate_ID    : C.Surcharge_Rate_ID;
+    const valueCol = isBase ? C.Base_Rate  : C.Value;
+
+    Logger.log('');
+    Logger.log('════ ' + t.sheet + ' ════');
+
+    const data = getAllData_(t.sheet);
+    const rows = [];
+    for (let i = 1; i < data.length; i++) {
+      const mid = safeInt(data[i][C.Modelling_ID]);
+      if (!mid) continue;
+      if (!safeBool(data[i][C.Active])) continue;      // inactive rows are history
+      if (only && hlOf[mid] !== only) continue;
+      rows.push({
+        id: safeInt(data[i][idCol]), mid: mid, hlId: hlOf[mid] || 0,
+        code: isBase ? '' : normKey(data[i][C.Surcharge_Code]),
+        from: fmtDate(data[i][C.Valid_From]), to: fmtDate(data[i][C.Valid_To]),
+        fromKey: dateKey(data[i][C.Valid_From]), toKey: dateKey(data[i][C.Valid_To]),
+        value: safeNum(data[i][valueCol]),
+        scenarioId: safeInt(data[i][C.Scenario_ID]) || 1
+      });
+    }
+
+    // ---- exact duplicates: same route, code, dates ------------------------
+    const exact = {};
+    rows.forEach(function (r) {
+      const k = r.mid + '|' + r.code + '|' + r.scenarioId + '|' + r.fromKey + '|' + r.toKey;
+      (exact[k] = exact[k] || []).push(r);
+    });
+
+    const dupKeys = Object.keys(exact).filter(function (k) { return exact[k].length > 1; });
+    dupKeys.sort(function (a, b) {
+      const x = exact[a][0], y = exact[b][0];
+      return x.hlId - y.hlId || x.mid - y.mid || x.fromKey - y.fromKey;
+    });
+
+    Logger.log('  active rows: ' + rows.length + ',  duplicated period(s): ' + dupKeys.length);
+
+    let lastHl = null;
+    dupKeys.forEach(function (k) {
+      const g = exact[k].slice().sort(function (a, b) { return a.id - b.id; });
+      if (g[0].hlId !== lastHl) {
+        Logger.log('');
+        Logger.log('  ── High Level ID ' + g[0].hlId + ' ──');
+        lastHl = g[0].hlId;
+      }
+      const sameValue = g.every(function (r) {
+        return Math.abs(r.value - g[0].value) < 1e-9; });
+
+      Logger.log('    MID ' + pad_(g[0].mid, 4) + '  ' + pad_(methodOf[g[0].mid] || '', 28) +
+                 (g[0].code ? '  ' + pad_(g[0].code, 8) : '') +
+                 '  ' + g[0].from + ' to ' + g[0].to + '   x' + g.length +
+                 (sameValue ? '' : '   ** VALUES DIFFER **'));
+      g.forEach(function (r) {
+        Logger.log('        row id ' + pad_(r.id, 6) + '  value ' + r.value.toFixed(4) +
+                   '  scenario ' + r.scenarioId);
+      });
+
+      if (!sameValue) {
+        Logger.log('        -> REFUSED. Same dates, different values. Which is right is a');
+        Logger.log('           business question; choosing one here would change a rate.');
+        ambiguous.push({ table: t.sheet, mid: g[0].mid, hlId: g[0].hlId, code: g[0].code,
+                         from: g[0].from, to: g[0].to,
+                         values: g.map(function (r) { return r.value; }),
+                         ids: g.map(function (r) { return r.id; }) });
+        return;
+      }
+      if (!canSeeModellingId_(perms, g[0].mid, true)) {
+        Logger.log('        -> SKIPPED, outside what ' + perms.email + ' can edit');
+        return;
+      }
+      Logger.log('        -> keep row id ' + g[0].id + ', deactivate ' +
+                 g.slice(1).map(function (r) { return r.id; }).join(', '));
+      plan.push({ tableKey: tableKey, sheet: t.sheet, isBase: isBase,
+                  mid: g[0].mid, hlId: g[0].hlId, code: g[0].code,
+                  from: g[0].from, to: g[0].to, value: g[0].value,
+                  keep: g[0].id,
+                  drop: g.slice(1).map(function (r) { return r.id; }) });
+    });
+
+    if (!dupKeys.length) Logger.log('  No two active rows share a route, code, scenario and dates.');
+
+    // ---- overlapping but not identical: reported only ---------------------
+    const byKey = {};
+    rows.forEach(function (r) {
+      const k = r.mid + '|' + r.code + '|' + r.scenarioId;
+      (byKey[k] = byKey[k] || []).push(r);
+    });
+    Object.keys(byKey).forEach(function (k) {
+      const g = byKey[k].sort(function (a, b) { return a.fromKey - b.fromKey; });
+      for (let i = 1; i < g.length; i++) {
+        if (g[i].fromKey > g[i - 1].toKey) continue;
+        if (g[i].fromKey === g[i - 1].fromKey && g[i].toKey === g[i - 1].toKey) continue; // exact, handled
+        overlaps.push({ table: t.sheet, mid: g[i].mid, hlId: g[i].hlId, code: g[i].code,
+                        a: g[i - 1].from + '..' + g[i - 1].to + ' @' + g[i - 1].value,
+                        b: g[i].from + '..' + g[i].to + ' @' + g[i].value });
+      }
+    });
+  });
+
+  if (overlaps.length) {
+    Logger.log('');
+    Logger.log('--- ' + overlaps.length + ' PARTIAL overlap(s): different dates that intersect ---');
+    overlaps.slice(0, 30).forEach(function (o) {
+      Logger.log('    ' + o.table + '  HL ' + pad_(o.hlId, 3) + '  MID ' + pad_(o.mid, 4) +
+                 (o.code ? '  ' + o.code : '') + '   ' + o.a + '   vs   ' + o.b);
+    });
+    if (overlaps.length > 30) Logger.log('    ... and ' + (overlaps.length - 30) + ' more');
+    Logger.log('  NOT touched. Fixing these means moving period boundaries, not deleting a');
+    Logger.log('  row. Validation reports them as RANGE_OVERLAP and blocks publishing.');
+  }
+
+  const drops = plan.reduce(function (a, p) { return a + p.drop.length; }, 0);
+
+  Logger.log('');
+  Logger.log('--- summary ---');
+  Logger.log('  duplicate period groups to fix : ' + plan.length);
+  Logger.log('  rows to deactivate             : ' + drops);
+  Logger.log('  refused, values differ         : ' + ambiguous.length);
+  Logger.log('  partial overlaps, untouched    : ' + overlaps.length);
+
+  const hlHit = {};
+  plan.forEach(function (p) { hlHit[p.hlId] = (hlHit[p.hlId] || 0) + p.drop.length; });
+  const hlKeys = Object.keys(hlHit).sort(function (a, b) { return safeInt(a) - safeInt(b); });
+  if (hlKeys.length) {
+    Logger.log('  by High Level ID:');
+    hlKeys.forEach(function (h) {
+      Logger.log('      HL ' + pad_(h, 4) + '  ' + hlHit[h] + ' row(s)'); });
+  }
+
+  if (!commit) {
+    Logger.log('');
+    if (drops) {
+      Logger.log('  ** THIS IS OVERSTATING THE FORECAST, not just cluttering a screen. **');
+      Logger.log('  Both of the engine\'s resolvers ADD every row matching a date:');
+      Logger.log('  pointInTime_ does total += r.v, and dayWeighted_ does');
+      Logger.log('  total += days * r.v. FUEL is DAY_WEIGHTED. So two identical 16% rows');
+      Logger.log('  produce 32% fuel for those days, and the segments listed above are');
+      Logger.log('  forecasting roughly double the surcharge they should.');
+      Logger.log('  computeModel_ does record a RANGE_OVERLAP defect when more than one row');
+      Logger.log('  matches, so it is not silent — but it returns the summed value anyway.');
+      Logger.log('');
+    }
+    Logger.log('  NOTHING WRITTEN. Run runRateDedupe() to deactivate exactly the rows above,');
+    Logger.log('  then re-run the calculation and publish — OUTPUT still holds the doubled');
+    Logger.log('  figures until it is rebuilt.');
+    return { ok: true, preview: true, spreadsheetId: spreadsheetId_(),
+             groups: plan.length, rowsToDeactivate: drops,
+             refusedValuesDiffer: ambiguous, partialOverlaps: overlaps.length,
+             byHighLevelId: hlHit };
+  }
+
+  if (!plan.length) throw new Error('Nothing to deduplicate. Anything refused or reported ' +
+    'above needs a decision rather than a delete.');
+
+  Logger.log('');
+  Logger.log('--- writing ---');
+  const done = [], failed = [];
+  plan.forEach(function (p) {
+    p.drop.forEach(function (id) {
+      try {
+        if (p.isBase) deleteBaseRate(id); else deleteSurchargeRate(id);
+        Logger.log('  ' + p.sheet + '  HL ' + pad_(p.hlId, 3) + '  MID ' + pad_(p.mid, 4) +
+                   '  deactivated row id ' + id + ' (kept ' + p.keep + ')');
+        done.push({ sheet: p.sheet, mid: p.mid, dropped: id, kept: p.keep });
+      } catch (e) {
+        Logger.log('  ' + p.sheet + '  MID ' + pad_(p.mid, 4) + '  FAILED on row id ' + id +
+                   ' — ' + e.message);
+        failed.push({ sheet: p.sheet, mid: p.mid, id: id, error: e.message });
+      }
+    });
+  });
+
+  Logger.log('');
+  Logger.log('--- done in ' + Math.round((Date.now() - t0) / 1000) + 's ---');
+  Logger.log('  deactivated : ' + done.length);
+  Logger.log('  failed      : ' + failed.length);
+  Logger.log('');
+  Logger.log('  Soft deletes, so every row and its history survive and simply stop reaching');
+  Logger.log('  the engine. Run validation to confirm RANGE_OVERLAP has cleared.');
+
+  return { ok: !failed.length, preview: false, deactivated: done.length, failed: failed,
+           refusedValuesDiffer: ambiguous, partialOverlaps: overlaps.length,
+           seconds: Math.round((Date.now() - t0) / 1000) };
+}
+
+/** Report duplicated periods. Writes nothing. */
+function previewRateDedupe() { return dedupeRatePeriods(false, null); }
+/** Deactivate the redundant copies. */
+function runRateDedupe()     { return dedupeRatePeriods(true, null); }
