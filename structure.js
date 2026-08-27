@@ -984,3 +984,255 @@ function testStructureWrite() {
   Logger.log('Nothing was created or changed — every attempt above was meant to fail.');
   return { ok: ok };
 }
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FINDING DUPLICATED ROUTES — read only
+//
+// A duplicated Modelling ID is not a display problem, and that is the whole
+// reason this reports rather than deletes. engine.js line 198:
+//
+//     hlTotal[d.hlId] += contribution;
+//
+// Every Modelling ID under a High Level ID has its contribution ADDED. Two rows
+// describing the same carrier, method and class therefore contribute twice, so the
+// segment's forecast rate is overstated by however many copies exist. Nothing
+// flags it: each row is individually valid, the mix still sums to 100%, and
+// validation has no rule against two routes being identical.
+//
+// Which means deduplicating a dropdown would hide an inflated forecast instead of
+// fixing one. The rows have to go, not the symptom.
+//
+// It also has to be the RIGHT row that goes. A duplicate pair is rarely
+// symmetrical: one usually carries the rates and mixes and the other is empty, and
+// deactivating the populated one silently prices that route at nothing. So every
+// copy is reported with what hangs off it — base rates, surcharges, method mixes —
+// and the recommendation follows the data rather than the row order.
+//
+// Dim_Method is checked too, because a duplicate there would put a method in the
+// dropdown twice for EVERY segment. If the complaint is about two High Level IDs
+// specifically, that is not the cause — but ruling it out costs one pass.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The identity of a route: same High Level ID, carrier, method and class. */
+function dupKeyOf_(hlId, carrier, method, lp) {
+  return safeInt(hlId) + '|' + normKey(carrier) + '|' + normKey(method) + '|' + normKey(lp);
+}
+
+/** How many rows in each rate/mix table point at this Modelling ID. */
+function dupAttachedCounts_(modellingId) {
+  const mid = safeInt(modellingId);
+  function count(sheetName, colIdx, activeIdx) {
+    const d = getAllData_(sheetName);
+    let all = 0, active = 0;
+    for (let i = 1; i < d.length; i++) {
+      if (safeInt(d[i][colIdx]) !== mid) continue;
+      all++;
+      if (activeIdx === undefined || safeBool(d[i][activeIdx])) active++;
+    }
+    return { all: all, active: active };
+  }
+  return {
+    base:      count(SHEET.RATE_BASE,      COL.RATE_BASE.Modelling_ID,      COL.RATE_BASE.Active),
+    surcharge: count(SHEET.RATE_SURCHARGE, COL.RATE_SURCHARGE.Modelling_ID, COL.RATE_SURCHARGE.Active),
+    mix:       count(SHEET.MIX_METHOD,     COL.MIX_METHOD.Modelling_ID,     COL.MIX_METHOD.Active)
+  };
+}
+
+/**
+ * Report duplicated routes, and what is attached to each copy.
+ *
+ * @param {number=} hlIdFilter  optional: look at one High Level ID only
+ */
+function diagnoseDuplicateRoutes(hlIdFilter) {
+  requireMaintenance_();
+  Logger.log('=== DUPLICATE ROUTES (read-only, nothing is written) ===');
+
+  prewarmSheetCache_([SHEET.MODELLING_IDS, SHEET.HIGH_LEVEL_IDS, SHEET.DIM_METHOD,
+                      SHEET.RATE_BASE, SHEET.RATE_SURCHARGE, SHEET.MIX_METHOD,
+                      SHEET.PERMISSIONS, SHEET.PORTAL_ROLES, SHEET.CONFIG]);
+
+  Logger.log('  spreadsheet : ' + spreadsheetId_());
+  const only = safeInt(hlIdFilter);
+  if (only) Logger.log('  restricted to High Level ID ' + only);
+
+  // ---- 1. Dim_Method, which feeds the method dropdown for every segment ---
+  Logger.log('');
+  Logger.log('════ 1. Dim_Method — the dropdown source, shared by all segments ════');
+  const dm = getAllData_(SHEET.DIM_METHOD), DM = COL.DIM_METHOD;
+  const byCode = {};
+  for (let i = 1; i < dm.length; i++) {
+    const code = normKey(dm[i][DM.Method_Code]);
+    if (!code) continue;
+    (byCode[code] = byCode[code] || []).push({
+      row: i + 1, carrier: safeStr(dm[i][DM.Carrier_Code]),
+      name: safeStr(dm[i][DM.Method_Name]), active: safeBool(dm[i][DM.Active])
+    });
+  }
+  const dupMethods = Object.keys(byCode).filter(function (c) { return byCode[c].length > 1; });
+  if (!dupMethods.length) {
+    Logger.log('  No duplicate Method_Code. So the dropdown is not doubled globally,');
+    Logger.log('  and a per-segment complaint is about Modelling_IDs below, not this.');
+  } else {
+    Logger.log('  ' + dupMethods.length + ' Method_Code(s) appear more than once:');
+    dupMethods.sort().forEach(function (c) {
+      Logger.log('    ' + c + ':');
+      byCode[c].forEach(function (m) {
+        Logger.log('      sheet row ' + pad_(m.row, 5) + '  ' + pad_(m.carrier, 12) + '  ' +
+                   m.name + (m.active ? '  ACTIVE' : '  inactive'));
+      });
+    });
+    Logger.log('  Only ACTIVE rows reach the dropdown (loadMethods_ in Code.gs).');
+  }
+
+  // ---- 2. Modelling_IDs — the ones that double the forecast --------------
+  Logger.log('');
+  Logger.log('════ 2. Modelling_IDs — duplicates here DOUBLE the forecast ════');
+
+  const hl = getAllData_(SHEET.HIGH_LEVEL_IDS), H = COL.HIGH_LEVEL_IDS;
+  const hlName = {};
+  for (let i = 1; i < hl.length; i++) {
+    const id = safeInt(hl[i][H.High_Level_ID]);
+    if (id) hlName[id] = safeStr(hl[i][H.Brand]) + ' ' + safeStr(hl[i][H.Geo]) + ' ' +
+                         safeStr(hl[i][H.Treatment_Type]) +
+                         (safeStr(hl[i][H.WL_Split]) ? ' ' + safeStr(hl[i][H.WL_Split]) : '');
+  }
+
+  const md = getAllData_(SHEET.MODELLING_IDS), M = COL.MODELLING_IDS;
+  const groups = {};
+  for (let i = 1; i < md.length; i++) {
+    const id = safeInt(md[i][M.Modelling_ID]);
+    if (!id) continue;
+    const hlId = safeInt(md[i][M.High_Level_ID]);
+    if (only && hlId !== only) continue;
+    const k = dupKeyOf_(hlId, md[i][M.Carrier_Code], md[i][M.Method_Code], md[i][M.Letter_Parcel]);
+    (groups[k] = groups[k] || []).push({
+      id: id, sheetRow: i + 1, hlId: hlId,
+      carrier: normKey(md[i][M.Carrier_Code]),
+      method: normKey(md[i][M.Method_Code]),
+      lp: normKey(md[i][M.Letter_Parcel]),
+      code: safeStr(md[i][M.Modelling_Code]),
+      active: safeBool(md[i][M.Active])
+    });
+  }
+
+  const dupKeys = Object.keys(groups).filter(function (k) { return groups[k].length > 1; });
+  dupKeys.sort(function (a, b) { return safeInt(a) - safeInt(b) || (a < b ? -1 : 1); });
+
+  const perHl = {}, recommend = [];
+  let dupActivePairs = 0;
+
+  if (!dupKeys.length) {
+    Logger.log('  No duplicates. Every carrier/method/class appears at most once per');
+    Logger.log('  High Level ID, so nothing here is double counting.');
+  } else {
+    Logger.log('  ' + dupKeys.length + ' route identity(ies) appear more than once.');
+    let lastHl = null;
+    dupKeys.forEach(function (k) {
+      const g = groups[k];
+      const actives = g.filter(function (r) { return r.active; });
+      if (g[0].hlId !== lastHl) {
+        Logger.log('');
+        Logger.log('  ── High Level ID ' + g[0].hlId + '  ' + (hlName[g[0].hlId] || '') + ' ──');
+        lastHl = g[0].hlId;
+      }
+      Logger.log('    ' + g[0].carrier + ' / ' + g[0].method + ' / ' + g[0].lp +
+                 '   x' + g.length + (actives.length > 1
+                   ? '   ** ' + actives.length + ' ACTIVE — counted ' + actives.length +
+                     ' times in the forecast **'
+                   : '   (' + actives.length + ' active)'));
+
+      if (actives.length > 1) {
+        dupActivePairs++;
+        perHl[g[0].hlId] = (perHl[g[0].hlId] || 0) + 1;
+      }
+
+      /* What hangs off each copy decides which one may safely go. */
+      const scored = g.map(function (r) {
+        const a = dupAttachedCounts_(r.id);
+        return { r: r, a: a, weight: a.base.active + a.surcharge.active + a.mix.active };
+      });
+      scored.forEach(function (s) {
+        Logger.log('        MID ' + pad_(s.r.id, 4) + '  row ' + pad_(s.r.sheetRow, 5) + '  ' +
+                   (s.r.active ? 'ACTIVE  ' : 'inactive') +
+                   '  base ' + pad_(s.a.base.active, 3) + '/' + pad_(s.a.base.all, 3) +
+                   '  surcharge ' + pad_(s.a.surcharge.active, 4) + '/' + pad_(s.a.surcharge.all, 4) +
+                   '  mix ' + pad_(s.a.mix.active, 3) + '/' + pad_(s.a.mix.all, 3) +
+                   '   ' + s.r.code);
+      });
+
+      if (actives.length > 1) {
+        /* Keep the copy carrying the most live data; it is the one the rest of the
+           sheet already refers to. An exact tie is not resolved here — picking
+           between two equally-referenced routes is a judgement about which the
+           business means, and guessing it silently is how the wrong one goes. */
+        const live = scored.filter(function (s) { return s.r.active; })
+                           .sort(function (x, y) { return y.weight - x.weight || x.r.id - y.r.id; });
+        const tie = live.length > 1 && live[0].weight === live[1].weight;
+        if (tie && live[0].weight === 0) {
+          Logger.log('        -> all copies are empty. Any one may be kept; keeping the');
+          Logger.log('           lowest ID (' + live[0].r.id + ') is the conventional choice.');
+          recommend.push({ key: k, hlId: g[0].hlId, keep: live[0].r.id,
+                           deactivate: live.slice(1).map(function (s) { return s.r.id; }),
+                           confidence: 'all empty' });
+        } else if (tie) {
+          Logger.log('        -> TIE: two active copies carry the same amount of live data.');
+          Logger.log('           Not recommending one. Decide which the business means.');
+          recommend.push({ key: k, hlId: g[0].hlId, keep: null,
+                           deactivate: [], confidence: 'tie — needs a human' });
+        } else {
+          Logger.log('        -> keep MID ' + live[0].r.id + ' (most live data), deactivate ' +
+                     live.slice(1).map(function (s) { return s.r.id; }).join(', '));
+          recommend.push({ key: k, hlId: g[0].hlId, keep: live[0].r.id,
+                           deactivate: live.slice(1).map(function (s) { return s.r.id; }),
+                           confidence: 'clear' });
+        }
+      }
+    });
+  }
+
+  // ---- 3. what it does to the forecast -----------------------------------
+  Logger.log('');
+  Logger.log('════ 3. forecast impact ════');
+  const hlIds = Object.keys(perHl).map(function (k) { return safeInt(k); })
+                      .sort(function (a, b) { return a - b; });
+  if (!hlIds.length) {
+    Logger.log('  None. No route identity has two or more ACTIVE copies, so no High Level');
+    Logger.log('  ID is double counting. Duplicates that are all inactive do not reach the');
+    Logger.log('  engine: computeModel_ filters them out (engine.gs, "active !== false").');
+  } else {
+    hlIds.forEach(function (id) {
+      Logger.log('  HL ' + pad_(id, 4) + '  ' + pad_(perHl[id], 4) + ' duplicated route(s)   ' +
+                 (hlName[id] || ''));
+    });
+    Logger.log('');
+    Logger.log('  Those segments\' published rates are OVERSTATED. Each duplicated route');
+    Logger.log('  contributes once per active copy, and nothing in validation objects.');
+    Logger.log('  Compare OUTPUT against previewOutput() after fixing, not before — the');
+    Logger.log('  published figures still carry the duplicates.');
+  }
+
+  Logger.log('');
+  Logger.log('--- what to do ---');
+  if (dupActivePairs) {
+    Logger.log('  Do NOT dedupe the dropdown. The dropdown is showing what is really there,');
+    Logger.log('  and hiding it would leave the forecast overstated with nothing on screen');
+    Logger.log('  to say so.');
+    Logger.log('  The fix is deleteModellingId(<id>) on the copy to drop — a soft delete, so');
+    Logger.log('  the row and its history survive and it stops reaching the engine.');
+    Logger.log('  Check the "keep / deactivate" lines above first: deactivating the copy that');
+    Logger.log('  holds the rates prices that route at nothing instead.');
+  } else {
+    Logger.log('  Nothing to remove. If the dropdown still shows something twice, it is not');
+    Logger.log('  coming from a duplicated route or a duplicated method — say what the');
+    Logger.log('  dropdown is and what it repeats.');
+  }
+  Logger.log('  Nothing was written. This function has no write path.');
+
+  return { ok: true, spreadsheetId: spreadsheetId_(),
+           duplicateMethodCodes: dupMethods,
+           duplicateRouteIdentities: dupKeys.length,
+           duplicatedActiveRoutes: dupActivePairs,
+           affectedHighLevelIds: hlIds,
+           recommendations: recommend };
+}
